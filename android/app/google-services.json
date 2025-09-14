@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "877646640496",
+    "project_id": "trust-cab-67571",
+    "storage_bucket": "trust-cab-67571.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:877646640496:android:909d531ef1caf61a894bb5",
+        "android_client_info": {
+          "package_name": "com.example.pcadmin"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDzfLZrSZAtA1IOBrXnz-VgkRbpFQwQUHk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:877646640496:android:5f973c258734bf4c894bb5",
+        "android_client_info": {
+          "package_name": "com.example.pcuser"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDzfLZrSZAtA1IOBrXnz-VgkRbpFQwQUHk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
