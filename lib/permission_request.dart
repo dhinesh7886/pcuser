@@ -2,6 +2,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class PermissionRequestScreen extends StatefulWidget {
   final String userId;
@@ -24,6 +25,9 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
 
   late AnimationController _animationController;
 
+  // resolved user id (will use widget.userId if provided; otherwise load from SharedPreferences)
+  String? _resolvedUserId;
+
   @override
   void initState() {
     super.initState();
@@ -31,6 +35,8 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
       vsync: this,
       duration: const Duration(seconds: 6),
     )..repeat(reverse: true);
+
+    _initResolvedUserId();
   }
 
   @override
@@ -40,12 +46,36 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
     super.dispose();
   }
 
+  Future<void> _initResolvedUserId() async {
+    // If widget.userId is non-empty, prefer that (keeps your existing behavior).
+    final passed = widget.userId.trim();
+    if (passed.isNotEmpty) {
+      setState(() {
+        _resolvedUserId = passed;
+      });
+      return;
+    }
+
+    // otherwise read from SharedPreferences (id saved at login)
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final stored = prefs.getString('id')?.trim();
+      if (stored != null && stored.isNotEmpty) {
+        setState(() {
+          _resolvedUserId = stored;
+        });
+      }
+    } catch (_) {
+      // ignore failures — we keep _resolvedUserId null and will show validation if saving
+    }
+  }
+
   // Pick Date
   Future<void> _pickDate() async {
     final today = DateTime.now();
     final picked = await showDatePicker(
       context: context,
-      initialDate: today,
+      initialDate: _selectedDate ?? today,
       firstDate: today,
       lastDate: DateTime(today.year + 1),
     );
@@ -56,7 +86,7 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
   Future<void> _pickFromTime() async {
     final picked = await showTimePicker(
       context: context,
-      initialTime: TimeOfDay.now(),
+      initialTime: _fromTime ?? TimeOfDay.now(),
     );
     if (picked != null) setState(() => _fromTime = picked);
   }
@@ -65,9 +95,17 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
   Future<void> _pickToTime() async {
     final picked = await showTimePicker(
       context: context,
-      initialTime: _fromTime ?? TimeOfDay.now(),
+      initialTime: _toTime ?? _fromTime ?? TimeOfDay.now(),
     );
     if (picked != null) setState(() => _toTime = picked);
+  }
+
+  // Resolve the user id to use (prefers resolved cached value, then widget.userId)
+  String? _getActiveUserId() {
+    final passed = widget.userId.trim();
+    if (_resolvedUserId != null && _resolvedUserId!.isNotEmpty) return _resolvedUserId;
+    if (passed.isNotEmpty) return passed;
+    return null;
   }
 
   // Submit Permission Request
@@ -80,23 +118,38 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
     setState(() => _submitting = true);
 
     final fromDateTime = DateTime(
-        _selectedDate!.year,
-        _selectedDate!.month,
-        _selectedDate!.day,
-        _fromTime!.hour,
-        _fromTime!.minute);
+      _selectedDate!.year,
+      _selectedDate!.month,
+      _selectedDate!.day,
+      _fromTime!.hour,
+      _fromTime!.minute,
+    );
     final toDateTime = DateTime(
-        _selectedDate!.year,
-        _selectedDate!.month,
-        _selectedDate!.day,
-        _toTime!.hour,
-        _toTime!.minute);
+      _selectedDate!.year,
+      _selectedDate!.month,
+      _selectedDate!.day,
+      _toTime!.hour,
+      _toTime!.minute,
+    );
 
     try {
-      final userRef =
-          FirebaseFirestore.instance.collection("Users").doc(widget.userId);
+      final uid = _getActiveUserId();
+      if (uid == null || uid.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("User ID not found. Please login again.")),
+        );
+        setState(() => _submitting = false);
+        return;
+      }
 
-      await userRef.collection("permission_requests").add({
+      final userRef = FirebaseFirestore.instance.collection("Users").doc(uid);
+
+      // Debug print: confirm exact path
+      // Check your debug console to ensure this path is correct
+      print('Saving permission_request under: Users/$uid/permission_request');
+
+      // Save to subcollection named "permission_request" (singular) as requested
+      await userRef.collection("permission_request").add({
         "date": Timestamp.fromDate(_selectedDate!),
         "fromTime": Timestamp.fromDate(fromDateTime),
         "toTime": Timestamp.fromDate(toDateTime),
@@ -130,10 +183,12 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
     final startOfMonth = DateTime(now.year, now.month, 1);
     final endOfMonth = DateTime(now.year, now.month + 1, 0, 23, 59, 59);
 
+    final uid = _getActiveUserId() ?? widget.userId; // fallback
+    // If uid is empty, this will still attempt — but widget.userId is required in constructor.
     return FirebaseFirestore.instance
         .collection("Users")
-        .doc(widget.userId)
-        .collection("permission_requests")
+        .doc(uid)
+        .collection("permission_request")
         .where("date", isGreaterThanOrEqualTo: Timestamp.fromDate(startOfMonth))
         .where("date", isLessThanOrEqualTo: Timestamp.fromDate(endOfMonth))
         .orderBy("date", descending: true)
@@ -383,8 +438,7 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
                               SizedBox(
                                 width: double.infinity,
                                 child: ElevatedButton.icon(
-                                  onPressed:
-                                      _submitting ? null : _submitRequest,
+                                  onPressed: _submitting ? null : _submitRequest,
                                   icon: const Icon(Icons.send),
                                   label: Text(_submitting
                                       ? "Submitting..."
