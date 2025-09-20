@@ -111,7 +111,7 @@ class _MapViewState extends State<MapView> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Pick Location"),
+        title: const Text("Pick Locations"),
         backgroundColor: Colors.deepPurple,
         actions: [
           TextButton(
