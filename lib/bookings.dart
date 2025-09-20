@@ -1,9 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart';
+import 'package:geocoding/geocoding.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:pcuser/mapview.dart';
-import 'package:permission_handler/permission_handler.dart';
 
 class CabBookingPage extends StatefulWidget {
   const CabBookingPage({super.key});
@@ -21,6 +21,7 @@ class _CabBookingPageState extends State<CabBookingPage> {
   DateTime? _startDate;
   TimeOfDay? _loginTime;
   bool _isLoading = false;
+  LatLng? _pickupLatLng;
 
   Future<void> _pickDate() async {
     final DateTime? picked = await showDatePicker(
@@ -37,8 +38,10 @@ class _CabBookingPageState extends State<CabBookingPage> {
   }
 
   Future<void> _pickTime() async {
-    final TimeOfDay? picked =
-        await showTimePicker(context: context, initialTime: TimeOfDay.now());
+    final TimeOfDay? picked = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.now(),
+    );
     if (picked != null) {
       setState(() {
         _loginTime = picked;
@@ -65,6 +68,8 @@ class _CabBookingPageState extends State<CabBookingPage> {
       await FirebaseFirestore.instance.collection('bookings').add({
         'userId': user?.uid,
         'pickupPlace': _pickupController.text.trim(),
+        'pickupLat': _pickupLatLng?.latitude,
+        'pickupLng': _pickupLatLng?.longitude,
         'daysRequired': int.tryParse(_daysController.text.trim()) ?? 1,
         'notes': _notesController.text.trim(),
         'startDate': _startDate!.toIso8601String(),
@@ -75,12 +80,10 @@ class _CabBookingPageState extends State<CabBookingPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Booking submitted successfully!")),
       );
-
-      Navigator.pop(context); // go back after submit
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Error: $e")),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text("Error: $e")));
     } finally {
       setState(() {
         _isLoading = false;
@@ -103,7 +106,10 @@ class _CabBookingPageState extends State<CabBookingPage> {
             children: [
               // Trip start date
               ListTile(
-                leading: const Icon(Icons.calendar_today, color: Colors.deepPurple),
+                leading: const Icon(
+                  Icons.calendar_today,
+                  color: Colors.deepPurple,
+                ),
                 title: Text(
                   _startDate == null
                       ? "Select Trip Start Date"
@@ -118,7 +124,10 @@ class _CabBookingPageState extends State<CabBookingPage> {
 
               // Login time
               ListTile(
-                leading: const Icon(Icons.access_time, color: Colors.deepPurple),
+                leading: const Icon(
+                  Icons.access_time,
+                  color: Colors.deepPurple,
+                ),
                 title: Text(
                   _loginTime == null
                       ? "Select Login Time"
@@ -138,7 +147,9 @@ class _CabBookingPageState extends State<CabBookingPage> {
                 decoration: InputDecoration(
                   labelText: "Number of Days Required",
                   prefixIcon: const Icon(Icons.calendar_view_day),
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
                 ),
                 validator: (value) {
                   if (value == null || value.isEmpty) {
@@ -155,18 +166,57 @@ class _CabBookingPageState extends State<CabBookingPage> {
                 decoration: InputDecoration(
                   labelText: "Pickup Place",
                   prefixIcon: const Icon(Icons.location_on),
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                  suffix: TextButton(onPressed: () async {
-                  var status = await Permission.location.status;
-                  if(status.isGranted){
-                   var r = await Geolocator.getCurrentPosition();
-                   print(r.latitude);
-                   print(r.longitude);
-                  } else {
-                    await Permission.location.request();
-                  }
-  // Navigator.of(context).push(MaterialPageRoute(builder: (context) => MapView()));
-                  }, child: Text("Open Map"))
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  suffixIcon:
+                      _pickupController.text.isEmpty
+                          ? IconButton(
+                            icon: const Icon(
+                              Icons.map,
+                              color: Colors.deepPurple,
+                            ),
+                            onPressed: () async {
+                              final result = await Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (context) => const MapView(),
+                                ),
+                              );
+                              if (result != null) {
+                                setState(() {
+                                  _pickupLatLng = result["latLng"];
+                                  _pickupController.text = result["address"];
+                                });
+                              }
+                            },
+                          )
+                          : IconButton(
+                            icon: const Icon(
+                              Icons.search,
+                              color: Colors.deepPurple,
+                            ),
+                            onPressed: () async {
+                              try {
+                                final locations = await locationFromAddress(
+                                  _pickupController.text.trim(),
+                                );
+                                if (locations.isNotEmpty) {
+                                  setState(() {
+                                    _pickupLatLng = LatLng(
+                                      locations.first.latitude,
+                                      locations.first.longitude,
+                                    );
+                                  });
+                                }
+                              } catch (e) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text("Could not find location"),
+                                  ),
+                                );
+                              }
+                            },
+                          ),
                 ),
                 validator: (value) {
                   if (value == null || value.isEmpty) {
@@ -175,6 +225,32 @@ class _CabBookingPageState extends State<CabBookingPage> {
                   return null;
                 },
               ),
+
+              //             TextFormField(
+              //               controller: _pickupController,
+              //               decoration: InputDecoration(
+              //                 labelText: "Pickup Place",
+              //                 prefixIcon: const Icon(Icons.location_on),
+              //                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              //                 suffix: TextButton(onPressed: () async {
+              //                 var status = await Permission.location.status;
+              //                 if(status.isGranted){
+              //                  var r = await Geolocator.getCurrentPosition();
+              //                  print(r.latitude);
+              //                  print(r.longitude);
+              //                 } else {
+              //                   await Permission.location.request();
+              //                 }
+              // // Navigator.of(context).push(MaterialPageRoute(builder: (context) => MapView()));
+              //                 }, child: Text("Open Map"))
+              //               ),
+              //               validator: (value) {
+              //                 if (value == null || value.isEmpty) {
+              //                   return "Enter pickup place";
+              //                 }
+              //                 return null;
+              //               },
+              //             ),
               const SizedBox(height: 12),
 
               // Additional notes
@@ -183,14 +259,13 @@ class _CabBookingPageState extends State<CabBookingPage> {
                 decoration: InputDecoration(
                   labelText: "Additional Notes (Optional)",
                   prefixIcon: const Icon(Icons.note),
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
                 ),
                 maxLines: 3,
               ),
               const SizedBox(height: 20),
-ElevatedButton(onPressed: () {
-  Navigator.of(context).push(MaterialPageRoute(builder: (context) => MapView()));
-}, child: Text("Map")),
               // Buttons
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -198,19 +273,34 @@ ElevatedButton(onPressed: () {
                   ElevatedButton.icon(
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.deepPurple,
-                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      foregroundColor: Colors.white,
+                      iconColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 12,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
                     ),
                     onPressed: _isLoading ? null : _submitBooking,
-                    icon: _isLoading
-                        ? const CircularProgressIndicator(color: Colors.white)
-                        : const Icon(Icons.send),
+                    icon:
+                        _isLoading
+                            ? const CircularProgressIndicator(
+                              color: Colors.white,
+                            )
+                            : const Icon(Icons.send),
                     label: const Text("Submit"),
                   ),
                   OutlinedButton.icon(
                     style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 12,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
                     ),
                     onPressed: () {
                       Navigator.pop(context);
