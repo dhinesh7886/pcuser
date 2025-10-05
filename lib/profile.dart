@@ -36,10 +36,18 @@ class _ProfilePageState extends State<ProfilePage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text("My Profile"),
-        backgroundColor: Colors.deepPurple,
+        centerTitle: true,
+        flexibleSpace: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              colors: [Colors.deepPurple, Colors.indigo],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+          ),
+        ),
       ),
       body: StreamBuilder<QuerySnapshot>(
-        // ✅ Fetch user based on Employee ID saved in SharedPreferences
         stream: FirebaseFirestore.instance
             .collection("Users")
             .where("id", isEqualTo: empId)
@@ -55,29 +63,72 @@ class _ProfilePageState extends State<ProfilePage> {
           var data = snapshot.data!.docs.first.data() as Map<String, dynamic>;
 
           return SingleChildScrollView(
+            padding: const EdgeInsets.all(20),
             child: Column(
               children: [
-                const SizedBox(height: 20),
-
-                // Profile Image Top Center
-                CircleAvatar(
-                  radius: 60,
-                  backgroundImage: (data['imageUrl'] != null &&
-                          data['imageUrl'].toString().isNotEmpty)
-                      ? NetworkImage(data['imageUrl'])
-                      : const NetworkImage("https://via.placeholder.com/150"),
+                // Profile Image
+                Center(
+                  child: Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: const LinearGradient(
+                        colors: [Colors.deepPurple, Colors.indigo],
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black26,
+                          blurRadius: 10,
+                          offset: const Offset(0, 5),
+                        ),
+                      ],
+                    ),
+                    child: CircleAvatar(
+                      radius: 65,
+                      backgroundImage: (data['imageUrl'] != null &&
+                              data['imageUrl'].toString().isNotEmpty)
+                          ? NetworkImage(data['imageUrl'])
+                          : const NetworkImage(
+                              "https://via.placeholder.com/150"),
+                    ),
+                  ),
                 ),
-                const SizedBox(height: 20),
+                const SizedBox(height: 25),
 
-                // Details Row by Row
-                _buildProfileRow("Employee ID", data['id']),
-                _buildProfileRow("Name", data['name']),
-                _buildProfileRow("Gender", data['gender']),
-                _buildProfileRow("Email", data['email']),
-                _buildProfileRow("Contact Number", data['contact']),
-                _buildProfileRow("Address", data['address']),
-                _buildProfileRow("Designation", data['designation']),
-                _buildProfileRow("Department", data['department']),
+                // Card with Details
+                Card(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(15),
+                  ),
+                  elevation: 6,
+                  shadowColor: Colors.deepPurple.withOpacity(0.3),
+                  child: Padding(
+                    padding: const EdgeInsets.all(18),
+                    child: Column(
+                      children: [
+                        _buildSectionTitle("Personal Info"),
+                        _buildProfileRow("Name", data['name']),
+                        _buildProfileRow("Gender", data['gender']),
+                        _buildProfileRow("Date of Birth", data['dob']),
+                        const Divider(),
+
+                        _buildSectionTitle("Job Info"),
+                        _buildProfileRow("Employee ID", data['id']),
+                        _buildProfileRow("Company", data['companyName']),
+                        _buildProfileRow("Branch", data['subDivision']),
+                        _buildProfileRow("Department", data['department']),
+                        _buildProfileRow("Designation", data['designation']),
+                        _buildProfileRow("Date of Joining", data['dateOfJoining']),
+                        const Divider(),
+
+                        _buildSectionTitle("Contact Info"),
+                        _buildProfileRow("Email", data['email']),
+                        _buildProfileRow("Contact", data['contact']),
+                        _buildProfileRow("Address", data['address']),
+                      ],
+                    ),
+                  ),
+                ),
               ],
             ),
           );
@@ -86,29 +137,42 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
+  Widget _buildSectionTitle(String title) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.symmetric(vertical: 10),
+      child: Text(
+        title,
+        style: const TextStyle(
+          fontSize: 18,
+          fontWeight: FontWeight.w700,
+          color: Colors.deepPurple,
+        ),
+      ),
+    );
+  }
+
   Widget _buildProfileRow(String label, dynamic value) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+      padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(
-            flex: 2,
+          SizedBox(
+            width: 140,
             child: Text(
               "$label:",
               style: const TextStyle(
-                fontWeight: FontWeight.bold,
+                fontWeight: FontWeight.w600,
                 fontSize: 16,
                 color: Colors.black87,
               ),
             ),
           ),
           Expanded(
-            flex: 3,
-            child: Text(
+            child: SelectableText(
               value?.toString() ?? "-",
               style: const TextStyle(fontSize: 16, color: Colors.black54),
-              overflow: TextOverflow.ellipsis,
             ),
           ),
         ],

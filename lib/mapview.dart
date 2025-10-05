@@ -29,6 +29,7 @@ class _MapViewState extends State<MapView> {
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
         await Geolocator.openLocationSettings();
+        setState(() => _loading = false);
         return;
       }
 
@@ -39,6 +40,7 @@ class _MapViewState extends State<MapView> {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text("Location permissions are denied")),
           );
+          setState(() => _loading = false);
           return;
         }
       }
@@ -46,9 +48,11 @@ class _MapViewState extends State<MapView> {
       if (permission == LocationPermission.deniedForever) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text("Location permissions is required to continue"),
+            content: Text(
+                "Location permissions are permanently denied, cannot continue"),
           ),
         );
+        setState(() => _loading = false);
         return;
       }
 
@@ -60,11 +64,19 @@ class _MapViewState extends State<MapView> {
         _currentLocation = LatLng(position.latitude, position.longitude);
         _loading = false;
       });
+
+      // Move camera to current location
+      if (_mapController != null) {
+        _mapController!.animateCamera(
+          CameraUpdate.newCameraPosition(
+            CameraPosition(target: _currentLocation!, zoom: 16),
+          ),
+        );
+      }
     } catch (e) {
       setState(() => _loading = false);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text("Error getting location: $e")));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text("Error getting location: $e")));
     }
   }
 
@@ -75,22 +87,20 @@ class _MapViewState extends State<MapView> {
     });
 
     try {
-      List<Placemark> placemarks = await placemarkFromCoordinates(
-        position.latitude,
-        position.longitude,
-      );
+      List<Placemark> placemarks =
+          await placemarkFromCoordinates(position.latitude, position.longitude);
 
       if (placemarks.isNotEmpty) {
         final place = placemarks.first;
         setState(() {
           _pickedAddress =
-              "${place.name}, ${place.subLocality}, ${place.locality},  ${place.administrativeArea}, ${place.country}";
+              "${place.name}, ${place.subLocality}, ${place.locality}, ${place.administrativeArea}, ${place.country}";
         });
+      } else {
+        setState(() => _pickedAddress = "Unknown location");
       }
     } catch (e) {
-      setState(() {
-        _pickedAddress = "Unknown location";
-      });
+      setState(() => _pickedAddress = "Unknown location");
     }
   }
 
@@ -111,7 +121,7 @@ class _MapViewState extends State<MapView> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Pick Locations"),
+        title: const Text("Pick Location"),
         backgroundColor: Colors.deepPurple,
         actions: [
           TextButton(
@@ -119,37 +129,42 @@ class _MapViewState extends State<MapView> {
             child: const Text(
               "CONFIRM",
               style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-              ),
+                  color: Colors.white, fontWeight: FontWeight.bold),
             ),
           ),
         ],
       ),
-      body:
-          _loading
-              ? const Center(child: CircularProgressIndicator())
-              : GoogleMap(
-                initialCameraPosition: CameraPosition(
-                  target:
-                      _currentLocation ??
-                      const LatLng(12.9716, 77.5946), // Chennai Location
-                  zoom: 14,
-                ),
-                onMapCreated: (controller) {
-                  _mapController = controller;
-                },
-                onTap: _onMapTap,
-                markers:
-                    _pickedLocation == null
-                        ? {}
-                        : {
-                          Marker(
-                            markerId: const MarkerId("picked"),
-                            position: _pickedLocation!,
-                          ),
-                        },
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : GoogleMap(
+              initialCameraPosition: CameraPosition(
+                target: _currentLocation ??
+                    const LatLng(12.9716, 77.5946), // fallback Chennai
+                zoom: 16,
               ),
+              myLocationEnabled: true,
+              myLocationButtonEnabled: true,
+              onMapCreated: (controller) {
+                _mapController = controller;
+                // Move camera if location is already fetched
+                if (_currentLocation != null) {
+                  _mapController!.animateCamera(
+                    CameraUpdate.newCameraPosition(
+                      CameraPosition(target: _currentLocation!, zoom: 16),
+                    ),
+                  );
+                }
+              },
+              onTap: _onMapTap,
+              markers: _pickedLocation == null
+                  ? {}
+                  : {
+                      Marker(
+                        markerId: const MarkerId("picked"),
+                        position: _pickedLocation!,
+                      ),
+                    },
+            ),
     );
   }
 }

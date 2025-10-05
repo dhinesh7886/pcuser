@@ -6,8 +6,9 @@ import 'package:pcuser/splash_screen.dart';
 import 'package:pcuser/user_provider.dart';
 import 'package:provider/provider.dart';
 
+
 void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+ await WidgetsFlutterBinding.ensureInitialized();
 
   try {
     await Firebase.initializeApp();
@@ -34,10 +35,7 @@ class MyApp extends StatelessWidget {
           colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
           useMaterial3: true,
         ),
-        // Keep your login screen as the first page
-        home: const SplashScreen(),
-
-        // ✅ Add named routes so provider navigation works
+        home: SplashScreen(),
         routes: {
           '/home': (_) => const UsersHomePage(),
         },
