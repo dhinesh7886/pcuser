@@ -21,7 +21,7 @@ class _StylishLoginPageState extends State<StylishLoginPage> {
   String? firestoreDob;
   String? passwordHint;
   bool passwordVisible = false;
-  bool _loading = true;
+  bool _loading = true; // For initial check
 
   @override
   void initState() {
@@ -58,16 +58,19 @@ class _StylishLoginPageState extends State<StylishLoginPage> {
     if (empId.isEmpty) return;
 
     try {
-      final snapshot = await FirebaseFirestore.instance
+      final docSnapshot = await FirebaseFirestore.instance
           .collection('Users')
-          .where('id', isEqualTo: empId)
+          .doc(empId)
           .get();
 
-      if (snapshot.docs.isNotEmpty) {
-        final data = snapshot.docs.first.data();
+      if (docSnapshot.exists) {
+        final data = docSnapshot.data();
         setState(() {
-          firestoreName = data['name'];
-          firestoreDob = data['dob'];
+          firestoreName = data!['name'];
+          // firestoreDob = data['dob']; // DDMMYYYY format
+          var p = data['dob'].split("/");
+          print(p);
+          firestoreDob = p[0]+ p[1];
           passwordHint = _generatePasswordHint(firestoreName!, firestoreDob!);
         });
       } else {
@@ -90,15 +93,8 @@ class _StylishLoginPageState extends State<StylishLoginPage> {
   String generatePassword(String name, String dob) {
     final first4 =
         name.length >= 4 ? name.substring(0, 4).toUpperCase() : name.toUpperCase();
-    try {
-      List<String> parts = dob.split('-');
-      String day = parts[0].padLeft(2, '0');
-      String month = parts[1].padLeft(2, '0');
-      return '$first4$day$month';
-    } catch (e) {
-      debugPrint("Error parsing DOB: $e");
-      return '$first4${dob.replaceAll("-", "")}';
-    }
+    final ddmm = dob.substring(0, 4); // DDMM from DDMMYYYY
+    return '$first4$ddmm';
   }
 
   String _generatePasswordHint(String name, String dob) {
@@ -116,246 +112,262 @@ class _StylishLoginPageState extends State<StylishLoginPage> {
       );
     }
 
+    final size = MediaQuery.of(context).size;
+    final isTablet = size.width > 600;
+
+    double cardWidth = isTablet ? 500 : size.width * 0.95;
+    double avatarRadius = isTablet ? 60 : 40;
+    double iconSize = isTablet ? 60 : 50;
+    double fontSizeTitle = isTablet ? 26 : 22;
+    double fontSizeHint = isTablet ? 14 : 12;
+    double buttonHeight = isTablet ? 55 : 50;
+
     return Scaffold(
       backgroundColor: Colors.teal[50],
       body: SafeArea(
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            double maxWidth = constraints.maxWidth;
-            double cardWidth = maxWidth > 600 ? 500 : maxWidth * 0.9;
-
-            return Center(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(16),
-                physics: const BouncingScrollPhysics(),
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(
-                    minHeight: constraints.maxHeight - 32, // full height minus padding
-                  ),
-                  child: IntrinsicHeight(
-                    child: Card(
-                      elevation: 10,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(24),
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: Card(
+              elevation: 10,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(24),
+              ),
+              child: Container(
+                width: cardWidth,
+                padding: EdgeInsets.symmetric(
+                  horizontal: isTablet ? 32 : 24,
+                  vertical: isTablet ? 40 : 32,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircleAvatar(
+                      radius: avatarRadius,
+                      backgroundColor: Colors.teal,
+                      child: Icon(Icons.person, size: iconSize, color: Colors.white),
+                    ),
+                    SizedBox(height: isTablet ? 20 : 16),
+                    Text(
+                      "Welcome to PC Users",
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: fontSizeTitle,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.teal,
                       ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(24),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const CircleAvatar(
-                              radius: 40,
-                              backgroundColor: Colors.teal,
-                              child: Icon(Icons.person, size: 50, color: Colors.white),
-                            ),
-                            const SizedBox(height: 16),
-                            const Text(
-                              "Welcome to PC Users",
-                              style: TextStyle(
-                                fontSize: 22,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.teal,
-                              ),
-                            ),
-                            const SizedBox(height: 30),
-                            // Employee ID
-                            TextField(
-                              controller: empIdController,
-                              decoration: InputDecoration(
-                                labelText: "Employee ID",
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                prefixIcon: const Icon(Icons.badge),
-                              ),
-                              onChanged: (val) {
-                                _fetchUserDetails(val.trim());
-                              },
-                            ),
-                            const SizedBox(height: 20),
-                            // OTP field
-                            if (userProvider.otpSent) ...[
-                              TextField(
-                                controller: otpController,
-                                decoration: InputDecoration(
-                                  labelText: "Enter OTP",
-                                  border: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  prefixIcon: const Icon(Icons.lock),
-                                ),
-                                keyboardType: TextInputType.number,
-                              ),
-                              const SizedBox(height: 20),
-                            ],
-                            // Password field
-                            TextField(
-                              controller: passwordController,
-                              obscureText: !passwordVisible,
-                              decoration: InputDecoration(
-                                labelText: "Enter Password (Optional)",
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                prefixIcon: const Icon(Icons.key),
-                                suffixIcon: IconButton(
-                                  icon: Icon(
-                                    passwordVisible
-                                        ? Icons.visibility
-                                        : Icons.visibility_off,
-                                  ),
-                                  onPressed: () {
-                                    setState(() {
-                                      passwordVisible = !passwordVisible;
-                                    });
-                                  },
-                                ),
-                              ),
-                            ),
-                            if (passwordHint != null) ...[
-                              const SizedBox(height: 8),
-                              Text(
-                                passwordHint!,
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.grey,
-                                  fontStyle: FontStyle.italic,
-                                ),
-                              ),
-                            ],
-                            const SizedBox(height: 20),
-                            // Buttons
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                              children: [
-                                if (!userProvider.otpSent)
-                                  ElevatedButton(
-                                    onPressed: userProvider.isSendingOtp
-                                        ? null
-                                        : () async {
-                                            await userProvider.getOtp(
-                                              empIdController.text.trim(),
-                                              context,
-                                              autoFillController: otpController,
-                                            );
-                                          },
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: Colors.teal,
-                                      shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(12),
-                                      ),
-                                    ),
-                                    child: userProvider.isSendingOtp
-                                        ? const SizedBox(
-                                            width: 20,
-                                            height: 20,
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 2,
-                                              color: Colors.white,
-                                            ),
-                                          )
-                                        : const Text(
-                                            "GET OTP",
-                                            style: TextStyle(color: Colors.white),
-                                          ),
-                                  ),
-                                ElevatedButton(
-                                  onPressed: () async {
-                                    String enteredPassword =
-                                        passwordController.text.trim();
-                                    String enteredOtp = otpController.text.trim();
-                                    bool success = false;
-                                    // Password validation
-                                    if (firestoreName != null &&
-                                        firestoreDob != null &&
-                                        enteredPassword.isNotEmpty) {
-                                      String generatedPwd = generatePassword(
-                                          firestoreName!, firestoreDob!);
-                                      if (enteredPassword == generatedPwd) {
-                                        success = true;
-                                      }
-                                    }
-                                    // OTP validation
-                                    if (userProvider.otpSent &&
-                                        enteredOtp.isNotEmpty) {
-                                      bool otpValid = await userProvider.submit(
-                                        enteredOtp,
-                                        empIdController.text.trim(),
-                                        context,
-                                      );
-                                      if (otpValid) success = true;
-                                    }
-                                    if (success) {
-                                      var sharedInstance =
-                                          await SharedPreferences.getInstance();
-                                      sharedInstance.setString(
-                                          "id", empIdController.text.trim());
-                                      if (mounted) {
-                                        Navigator.pushReplacement(
-                                          context,
-                                          MaterialPageRoute(
-                                              builder: (context) =>
-                                                  const UsersHomePage()),
-                                        );
-                                      }
-                                    } else {
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(
-                                          content: Text("Invalid OTP or Password"),
-                                          backgroundColor: Colors.redAccent,
-                                        ),
-                                      );
-                                    }
-                                  },
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors.green,
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
-                                  ),
-                                  child: const Text(
-                                    "SUBMIT",
-                                    style: TextStyle(color: Colors.white),
-                                  ),
-                                ),
-                                ElevatedButton(
-                                  onPressed: () async {
-                                    empIdController.clear();
-                                    otpController.clear();
-                                    passwordController.clear();
-                                    userProvider.clearState();
-                                    var sharedInstance =
-                                        await SharedPreferences.getInstance();
-                                    sharedInstance.remove("id");
-                                    setState(() {
-                                      passwordHint = null;
-                                      firestoreName = null;
-                                      firestoreDob = null;
-                                      passwordVisible = false;
-                                    });
-                                  },
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors.redAccent,
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
-                                  ),
-                                  child: const Text(
-                                    "CANCEL / LOGOUT",
-                                    style: TextStyle(color: Colors.white),
-                                  ),
-                                ),
-                              ],
-                            )
-                          ],
+                    ),
+                    SizedBox(height: isTablet ? 35 : 30),
+
+                    // Employee ID
+                    TextField(
+                      controller: empIdController,
+                      decoration: InputDecoration(
+                        labelText: "Employee ID",
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        prefixIcon: const Icon(Icons.badge),
+                      ),
+                      onChanged: (val) {
+                        _fetchUserDetails(val.trim());
+                      },
+                    ),
+                    SizedBox(height: isTablet ? 25 : 20),
+
+                    // OTP field
+                    if (userProvider.otpSent) ...[
+                      TextField(
+                        controller: otpController,
+                        decoration: InputDecoration(
+                          labelText: "Enter OTP",
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          prefixIcon: const Icon(Icons.lock),
+                        ),
+                        keyboardType: TextInputType.number,
+                      ),
+                      SizedBox(height: isTablet ? 25 : 20),
+                    ],
+
+                    // Password field with toggle
+                    TextField(
+                      controller: passwordController,
+                      obscureText: !passwordVisible,
+                      decoration: InputDecoration(
+                        labelText: "Enter Password (Optional)",
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        prefixIcon: const Icon(Icons.key),
+                        suffixIcon: IconButton(
+                          icon: Icon(
+                            passwordVisible ? Icons.visibility : Icons.visibility_off,
+                          ),
+                          onPressed: () {
+                            setState(() {
+                              passwordVisible = !passwordVisible;
+                            });
+                          },
                         ),
                       ),
                     ),
-                  ),
+
+                    if (passwordHint != null) ...[
+                      SizedBox(height: 8),
+                      Text(
+                        passwordHint!,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: fontSizeHint,
+                          color: Colors.grey,
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
+                    ],
+                    SizedBox(height: isTablet ? 25 : 20),
+
+                    // Buttons
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 12,
+                      alignment: WrapAlignment.center,
+                      children: [
+                        if (!userProvider.otpSent)
+                          SizedBox(
+                            height: buttonHeight,
+                            child: ElevatedButton(
+                              onPressed: userProvider.isSendingOtp
+                                  ? null
+                                  : () async {
+                                      await userProvider.getOtp(
+                                        empIdController.text.trim(),
+                                        context,
+                                        autoFillController: otpController,
+                                      );
+                                    },
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.teal,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                              ),
+                              child: userProvider.isSendingOtp
+                                  ? SizedBox(
+                                      width: 20,
+                                      height: 20,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: Colors.white,
+                                      ),
+                                    )
+                                  : const Text(
+                                      "GET OTP",
+                                      style: TextStyle(color: Colors.white),
+                                    ),
+                            ),
+                          ),
+
+                        SizedBox(
+                          height: buttonHeight,
+                          child: ElevatedButton(
+                            onPressed: () async {
+                              String enteredPassword = passwordController.text.trim();
+                              String enteredOtp = otpController.text.trim();
+                              bool success = false;
+
+                              if (firestoreName != null &&
+                                  firestoreDob != null &&
+                                  enteredPassword.isNotEmpty) {
+                                String generatedPwd =
+                                    generatePassword(firestoreName!, firestoreDob!);
+                                if (enteredPassword == generatedPwd) {
+                                  success = true;
+                                }
+                              }
+
+                              if (userProvider.otpSent && enteredOtp.isNotEmpty) {
+                                bool otpValid = await userProvider.submit(
+                                  enteredOtp,
+                                  empIdController.text.trim(),
+                                  context,
+                                );
+                                if (otpValid) success = true;
+                              }
+
+                              if (success) {
+                                var sharedInstance =
+                                    await SharedPreferences.getInstance();
+                                sharedInstance.setString(
+                                    "id", empIdController.text.trim());
+                                if (mounted) {
+                                  Navigator.pushReplacement(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) => const UsersHomePage(),
+                                    ),
+                                  );
+                                }
+                              } else {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text("Invalid OTP or Password"),
+                                    backgroundColor: Colors.redAccent,
+                                  ),
+                                );
+                              }
+                            },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.green,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            child: const Text(
+                              "SUBMIT",
+                              style: TextStyle(color: Colors.white),
+                            ),
+                          ),
+                        ),
+
+                        SizedBox(
+                          height: buttonHeight,
+                          child: ElevatedButton(
+                            onPressed: () async {
+                              empIdController.clear();
+                              otpController.clear();
+                              passwordController.clear();
+                              userProvider.clearState();
+                              var sharedInstance =
+                                  await SharedPreferences.getInstance();
+                              sharedInstance.remove("id");
+                              setState(() {
+                                passwordHint = null;
+                                firestoreName = null;
+                                firestoreDob = null;
+                                passwordVisible = false;
+                              });
+                            },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.redAccent,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            child: const Text(
+                              "CANCEL",
+                              style: TextStyle(color: Colors.white),
+                            ),
+                          ),
+                        ),
+                      ],
+                    )
+                  ],
                 ),
               ),
-            );
-          },
+            ),
+          ),
         ),
       ),
     );

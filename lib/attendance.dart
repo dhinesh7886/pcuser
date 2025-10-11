@@ -20,16 +20,17 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   bool saving = false;
   String status = "Tap the button to mark attendance";
   String? empName;
+  String? companyName;
+  String? subDivision;
   bool _loadingUser = true;
 
   @override
   void initState() {
     super.initState();
-    _loadUserName();
+    _loadUserDetails();
   }
 
-  // Load user name from Firestore using 'id' field
-  Future<void> _loadUserName() async {
+  Future<void> _loadUserDetails() async {
     try {
       final snapshot = await FirebaseFirestore.instance
           .collection('Users')
@@ -40,9 +41,13 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       if (snapshot.docs.isNotEmpty) {
         final data = snapshot.docs.first.data();
         empName = data['name'] ?? widget.userId;
+        companyName = data['companyName'];
+        subDivision = data['subDivision'];
       } else {
         empName = "User not found";
       }
+
+      await _checkAndCreateHoliday();
     } catch (e) {
       empName = "Error loading user";
     } finally {
@@ -64,6 +69,58 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         .where('timestamp', isLessThan: _endOfDay())
         .orderBy('timestamp')
         .snapshots();
+  }
+
+  Future<void> _checkAndCreateHoliday() async {
+    if (companyName == null || subDivision == null) return;
+
+    final now = DateTime.now();
+    final dateKey = DateFormat('ddMMyyyy').format(now);
+
+    final holidayMap = {
+      'AYCA PC|Corporate': {
+        '20102025': 'Deepavali',
+        '25122025': 'Christmas',
+      },
+      'AYCA PC|Isuzu': {
+        '20102025': 'Diwali',
+        '21102025': 'Additional Holiday for Diwali',
+        '25122025': 'Christmas',
+      },
+    };
+
+    final key = '$companyName|$subDivision';
+    final holidays = holidayMap[key];
+
+    if (holidays == null || !holidays.containsKey(dateKey)) return;
+
+    final reason = holidays[dateKey]!;
+
+    final recordRef = FirebaseFirestore.instance
+        .collection('attendance')
+        .doc(widget.userId)
+        .collection('records');
+
+    final existing = await recordRef
+        .where('dateKey', isEqualTo: dateKey)
+        .where('type', isEqualTo: 'holiday')
+        .get();
+
+    if (existing.docs.isEmpty) {
+      await recordRef.add({
+        'timestamp': Timestamp.fromDate(now),
+        'type': 'holiday',
+        'reason': reason,
+        'dateKey': dateKey,
+        'companyName': companyName,
+        'subDivision': subDivision,
+      });
+
+      setState(() {
+        status =
+            "Holiday marked automatically: $reason (${DateFormat('dd/MM/yyyy').format(now)})";
+      });
+    }
   }
 
   Future<void> _markAttendance() async {
@@ -92,10 +149,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         return;
       }
 
-      // Get current time
       final now = DateTime.now();
+      final dateKey = DateFormat('ddMMyyyy').format(now);
 
-      // Adjust punch date: if time is before 5AM, assign to previous day
       DateTime adjustedDate = now;
       if (now.hour < 5) {
         adjustedDate = now.subtract(const Duration(days: 1));
@@ -113,7 +169,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           .where('timestamp', isLessThan: endOfDay)
           .get();
 
-      if (todayRecordsSnapshot.docs.length >= 2) {
+      final punchRecords = todayRecordsSnapshot.docs
+          .where((doc) =>
+              doc['type'] == 'punch_in' || doc['type'] == 'punch_out')
+          .toList();
+
+      if (punchRecords.length >= 2) {
         setState(() => status = "Already punched in & out today!");
         return;
       }
@@ -124,10 +185,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
       String address = "Unknown";
       try {
-        final placemarks = await placemarkFromCoordinates(
-          pos.latitude,
-          pos.longitude,
-        );
+        final placemarks =
+            await placemarkFromCoordinates(pos.latitude, pos.longitude);
         if (placemarks.isNotEmpty) {
           final p = placemarks.first;
           final parts = [
@@ -144,7 +203,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         }
       } catch (_) {}
 
-      final type = todayRecordsSnapshot.docs.isEmpty ? 'punch_in' : 'punch_out';
+      final type = punchRecords.isEmpty ? 'punch_in' : 'punch_out';
 
       await FirebaseFirestore.instance
           .collection('attendance')
@@ -157,11 +216,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         'lng': pos.longitude,
         'address': address,
         'type': type,
+        'dateKey': dateKey,
       });
 
       setState(() {
         status =
-            "${type == 'punch_in' ? "Punch In" : "Punch Out"} saved at ${DateFormat('hh:mm a').format(now)}\n$address";
+            "${type == 'punch_in' ? "Punch In" : "Punch Out"} saved at ${DateFormat('HH:mm').format(now)}\n$address";
       });
     } catch (e) {
       setState(() => status = "Error saving attendance: $e");
@@ -187,50 +247,62 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           );
         }
 
-        // ✅ Fix for null-safe firstWhere
         QueryDocumentSnapshot? punchInDoc;
         QueryDocumentSnapshot? punchOutDoc;
+        QueryDocumentSnapshot? holidayDoc;
 
         try {
-          punchInDoc = snapshot.data!.docs
-              .firstWhere((doc) => doc['type'] == 'punch_in');
-        } catch (_) {
-          punchInDoc = null;
-        }
-
+          punchInDoc =
+              snapshot.data!.docs.firstWhere((doc) => doc['type'] == 'punch_in');
+        } catch (_) {}
         try {
-          punchOutDoc = snapshot.data!.docs
-              .firstWhere((doc) => doc['type'] == 'punch_out');
-        } catch (_) {
-          punchOutDoc = null;
-        }
+          punchOutDoc =
+              snapshot.data!.docs.firstWhere((doc) => doc['type'] == 'punch_out');
+        } catch (_) {}
+        try {
+          holidayDoc =
+              snapshot.data!.docs.firstWhere((doc) => doc['type'] == 'holiday');
+        } catch (_) {}
 
-        return Column(
-          children: [
-            if (punchInDoc != null) ...[
-              _buildRecordCard(punchInDoc, true),
+        return SingleChildScrollView(
+          child: Column(
+            children: [
+              if (holidayDoc != null) _buildHolidayCard(holidayDoc),
+              if (punchInDoc != null) _buildRecordCard(punchInDoc, true),
+              if (punchOutDoc != null) _buildRecordCard(punchOutDoc, false),
             ],
-            if (punchOutDoc != null) ...[
-              _buildRecordCard(punchOutDoc, false),
-            ],
-          ],
+          ),
         );
       },
+    );
+  }
+
+  Widget _buildHolidayCard(QueryDocumentSnapshot doc) {
+    final data = doc.data() as Map<String, dynamic>;
+    final reason = data['reason'] ?? 'Holiday';
+    final ts = (data['timestamp'] as Timestamp?)?.toDate();
+    final dateStr = ts != null ? DateFormat('dd/MM/yyyy').format(ts) : '';
+
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      color: Colors.yellow.shade100,
+      child: ListTile(
+        leading: const Icon(Icons.beach_access, color: Colors.orange),
+        title: Text("Holiday: $reason"),
+        subtitle: Text(dateStr),
+      ),
     );
   }
 
   Widget _buildRecordCard(QueryDocumentSnapshot doc, bool isPunchIn) {
     final data = doc.data() as Map<String, dynamic>;
     final ts = (data['timestamp'] as Timestamp?)?.toDate();
-    final timeStr = ts != null ? DateFormat('hh:mm a').format(ts) : 'Pending';
+    final timeStr = ts != null ? DateFormat('HH:mm').format(ts) : 'Pending';
     final address = data['address'] ?? 'No address';
+    final width = MediaQuery.of(context).size.width;
 
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(15),
-      ),
-      elevation: 5,
       color: Colors.white.withOpacity(0.9),
       child: ListTile(
         leading: CircleAvatar(
@@ -238,12 +310,13 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           child: Icon(
             isPunchIn ? Icons.login : Icons.logout,
             color: Colors.white,
+            size: width * 0.07,
           ),
         ),
-        title: Text(
-          "${isPunchIn ? "Punch In" : "Punch Out"} • $timeStr",
-        ),
-        subtitle: Text(address),
+        title: Text("${isPunchIn ? "Punch In" : "Punch Out"} • $timeStr",
+            style: TextStyle(fontSize: width * 0.045)),
+        subtitle:
+            Text(address, style: TextStyle(fontSize: width * 0.035)),
       ),
     );
   }
@@ -254,22 +327,24 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     required Color color,
     required VoidCallback onTap,
   }) {
+    double width = MediaQuery.of(context).size.width;
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      padding: EdgeInsets.symmetric(horizontal: width * 0.04, vertical: 8),
       child: ElevatedButton.icon(
         style: ElevatedButton.styleFrom(
           backgroundColor: color,
-          minimumSize: const Size.fromHeight(55),
+          minimumSize: Size(double.infinity, width * 0.14),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(15),
           ),
-          elevation: 6,
         ),
-        icon: Icon(icon, color: Colors.white),
+        icon: Icon(icon, color: Colors.white, size: width * 0.06),
         label: Text(
           label,
-          style: const TextStyle(
-              color: Colors.white, fontWeight: FontWeight.bold, fontSize: 20),
+          style: TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.bold,
+              fontSize: width * 0.045),
         ),
         onPressed: onTap,
       ),
@@ -288,6 +363,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       ),
       body: Container(
         width: double.infinity,
+        height: double.infinity,
         decoration: const BoxDecoration(
           gradient: LinearGradient(
             colors: [Color(0xFF00BFA6), Color(0xFF00E5FF)],
@@ -295,87 +371,100 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             end: Alignment.bottomRight,
           ),
         ),
-        child: SingleChildScrollView(
-          child: Column(
-            children: [
-              const SizedBox(height: 18),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                child: Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.8),
-                    borderRadius: BorderRadius.circular(15),
+        child: SafeArea(
+          child: SingleChildScrollView(
+            child: Padding(
+              padding: EdgeInsets.symmetric(
+                  horizontal: MediaQuery.of(context).size.width * 0.02,
+                  vertical: 12),
+              child: Column(
+                children: [
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.8),
+                      borderRadius: BorderRadius.circular(15),
+                    ),
+                    child: Text(
+                      status,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          fontSize: MediaQuery.of(context).size.width * 0.04,
+                          color: Colors.black87),
+                    ),
                   ),
-                  child: Text(
-                    status,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 15, color: Colors.black87),
+                  const SizedBox(height: 12),
+                  const Divider(color: Colors.white70, thickness: 1),
+                  Text(
+                    "Today's Records",
+                    style: TextStyle(
+                        fontSize: MediaQuery.of(context).size.width * 0.05,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white),
                   ),
-                ),
+                  SizedBox(
+                    height: MediaQuery.of(context).size.height * 0.45,
+                    child: _buildRecordsList(),
+                  ),
+                  _fullWidthButton(
+                    icon: Icons.request_page,
+                    label: "Permission Request",
+                    color: Colors.orange,
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) =>
+                              PermissionRequestScreen(userId: widget.userId),
+                        ),
+                      );
+                    },
+                  ),
+                  _fullWidthButton(
+                    icon: Icons.leave_bags_at_home,
+                    label: "Leave Request",
+                    color: Colors.blue,
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) =>
+                              LeaveRequestScreen(userId: widget.userId),
+                        ),
+                      );
+                    },
+                  ),
+                  _fullWidthButton(
+                    icon: Icons.data_usage,
+                    label: "Attendance Data",
+                    color: Colors.green,
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) =>
+                              AttendanceDataScreen(userId: widget.userId),
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 20),
+                ],
               ),
-              const SizedBox(height: 12),
-              const Divider(color: Colors.white70, thickness: 1),
-              const SizedBox(height: 8),
-              const Text(
-                "Today's Records",
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
-                ),
-              ),
-              const SizedBox(height: 8),
-              SizedBox(height: 300, child: _buildRecordsList()),
-              const SizedBox(height: 16),
-              _fullWidthButton(
-                icon: Icons.request_page,
-                label: "Permission Request",
-                color: Colors.orange,
-                onTap: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (context) =>
-                          PermissionRequestScreen(userId: widget.userId),
-                    ),
-                  );
-                },
-              ),
-              _fullWidthButton(
-                icon: Icons.leave_bags_at_home,
-                label: "Leave Request",
-                color: Colors.blue,
-                onTap: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (context) =>
-                          LeaveRequestScreen(userId: widget.userId),
-                    ),
-                  );
-                },
-              ),
-              _fullWidthButton(
-                icon: Icons.data_usage,
-                label: "Attendance Data",
-                color: Colors.green,
-                onTap: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (context) =>
-                          AttendanceDataScreen(userId: widget.userId),
-                    ),
-                  );
-                },
-              ),
-              const SizedBox(height: 80),
-            ],
+            ),
           ),
         ),
       ),
       floatingActionButton: StreamBuilder<QuerySnapshot>(
         stream: _todayRecordsStream(),
         builder: (context, snapshot) {
-          int count = snapshot.data?.docs.length ?? 0;
+          int count = snapshot.data?.docs
+                  .where((doc) =>
+                      doc['type'] == 'punch_in' || doc['type'] == 'punch_out')
+                  .length ??
+              0;
+
           String label =
               count == 0 ? "Punch In" : count == 1 ? "Punch Out" : "Completed";
 
@@ -383,7 +472,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             onPressed: (saving || count >= 2) ? null : _markAttendance,
             icon: const Icon(Icons.fingerprint),
             label: Text(label),
-            backgroundColor: Colors.teal,
+            backgroundColor: const Color.fromARGB(255, 240, 217, 87),
           );
         },
       ),

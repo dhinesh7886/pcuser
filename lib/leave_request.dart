@@ -2,6 +2,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class LeaveRequestScreen extends StatefulWidget {
   final String userId;
@@ -22,6 +23,12 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
 
   late AnimationController _animationController;
 
+  String? _userName;
+  String? _subDivision;
+  String? _companyName;
+  String? _department;
+  String? _designation;
+
   @override
   void initState() {
     super.initState();
@@ -29,6 +36,8 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
       vsync: this,
       duration: const Duration(seconds: 6),
     )..repeat(reverse: true);
+
+    _loadUserDetails();
   }
 
   @override
@@ -36,6 +45,17 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
     _reasonController.dispose();
     _animationController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadUserDetails() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _userName = prefs.getString("name") ?? "";
+      _subDivision = prefs.getString("subDivision") ?? "";
+      _companyName = prefs.getString("companyName") ?? "";
+      _department = prefs.getString("department") ?? "";
+      _designation = prefs.getString("designation") ?? "";
+    });
   }
 
   Future<void> _pickStartDate() async {
@@ -61,36 +81,50 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
   }
 
   Future<void> _submitRequest() async {
-    if (!_formKey.currentState!.validate() || _startDate == null || _endDate == null) return;
+    if (!_formKey.currentState!.validate() ||
+        _startDate == null ||
+        _endDate == null) return;
 
     setState(() => _submitting = true);
 
     try {
-      final userRef = FirebaseFirestore.instance.collection("Users").doc(widget.userId);
+      final userRef =
+          FirebaseFirestore.instance.collection("Users").doc(widget.userId);
 
       // Check overlap
-      final existingLeavesSnapshot = await userRef.collection("leave_requests").get();
+      final existingLeavesSnapshot =
+          await userRef.collection("leave_requests").get();
       bool overlap = existingLeavesSnapshot.docs.any((doc) {
         final data = doc.data();
         final existingStart = (data['startDate'] as Timestamp).toDate();
         final existingEnd = (data['endDate'] as Timestamp).toDate();
-        return !(_endDate!.isBefore(existingStart) || _startDate!.isAfter(existingEnd));
+        return !(_endDate!.isBefore(existingStart) ||
+            _startDate!.isAfter(existingEnd));
       });
 
       if (overlap) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Leave request overlaps with existing request")),
+          const SnackBar(
+              content:
+                  Text("Leave request overlaps with existing request")),
         );
         setState(() => _submitting = false);
         return;
       }
 
+      // Add leave request with user details
       await userRef.collection("leave_requests").add({
         "startDate": Timestamp.fromDate(_startDate!),
         "endDate": Timestamp.fromDate(_endDate!),
         "reason": _reasonController.text.trim(),
         "status": "Waiting for Approval",
         "createdAt": FieldValue.serverTimestamp(),
+        "id": widget.userId,
+        "name": _userName,
+        "subDivision": _subDivision,
+        "companyName": _companyName,
+        "department": _department,
+        "designation": _designation,
       });
 
       _reasonController.clear();
@@ -111,12 +145,22 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
     }
   }
 
+  // ✅ Updated to filter current + upcoming month only
   Stream<QuerySnapshot> _leaveRequestsStream() {
+    final now = DateTime.now();
+    final startOfCurrentMonth = DateTime(now.year, now.month, 1);
+    final startOfNextMonth =
+        DateTime(now.year, now.month + 2, 1); // end of upcoming month
+
     return FirebaseFirestore.instance
         .collection("Users")
         .doc(widget.userId)
         .collection("leave_requests")
-        .orderBy("createdAt", descending: true)
+        .where("startDate",
+            isGreaterThanOrEqualTo: Timestamp.fromDate(startOfCurrentMonth))
+        .where("startDate",
+            isLessThan: Timestamp.fromDate(startOfNextMonth))
+        .orderBy("startDate", descending: false)
         .snapshots();
   }
 
@@ -130,8 +174,10 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
         if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
           return const Padding(
             padding: EdgeInsets.all(16.0),
-            child: Text("No leave requests submitted yet",
-                style: TextStyle(fontSize: 14, color: Colors.white70)),
+            child: Text(
+              "No leave requests for current or upcoming month",
+              style: TextStyle(fontSize: 14, color: Colors.white70),
+            ),
           );
         }
 
@@ -158,8 +204,10 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
             }
 
             return Card(
-              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              margin:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(20)),
               elevation: 8,
               shadowColor: Colors.black45,
               child: Padding(
@@ -171,7 +219,8 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
                       children: [
                         CircleAvatar(
                           backgroundColor: statusColor.withOpacity(0.2),
-                          child: Icon(Icons.pending_actions, color: statusColor),
+                          child: Icon(Icons.pending_actions,
+                              color: statusColor),
                         ),
                         const SizedBox(width: 12),
                         Expanded(
@@ -182,13 +231,16 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
                           ),
                         ),
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 4),
                           decoration: BoxDecoration(
                               color: statusColor.withOpacity(0.1),
                               borderRadius: BorderRadius.circular(12)),
                           child: Text(
                             status,
-                            style: TextStyle(color: statusColor, fontWeight: FontWeight.bold),
+                            style: TextStyle(
+                                color: statusColor,
+                                fontWeight: FontWeight.bold),
                           ),
                         )
                       ],
@@ -273,13 +325,17 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
                                     decoration: InputDecoration(
                                       labelText: _startDate == null
                                           ? "Start Date"
-                                          : DateFormat("dd MMM yyyy").format(_startDate!),
+                                          : DateFormat("dd MMM yyyy")
+                                              .format(_startDate!),
                                       border: OutlineInputBorder(
-                                          borderRadius: BorderRadius.circular(12)),
-                                      suffixIcon: const Icon(Icons.calendar_today),
+                                          borderRadius:
+                                              BorderRadius.circular(12)),
+                                      suffixIcon:
+                                          const Icon(Icons.calendar_today),
                                     ),
                                     validator: (value) {
-                                      if (_startDate == null) return "Please select start date";
+                                      if (_startDate == null)
+                                        return "Please select start date";
                                       return null;
                                     },
                                   ),
@@ -293,13 +349,17 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
                                     decoration: InputDecoration(
                                       labelText: _endDate == null
                                           ? "End Date"
-                                          : DateFormat("dd MMM yyyy").format(_endDate!),
+                                          : DateFormat("dd MMM yyyy")
+                                              .format(_endDate!),
                                       border: OutlineInputBorder(
-                                          borderRadius: BorderRadius.circular(12)),
-                                      suffixIcon: const Icon(Icons.calendar_today),
+                                          borderRadius:
+                                              BorderRadius.circular(12)),
+                                      suffixIcon:
+                                          const Icon(Icons.calendar_today),
                                     ),
                                     validator: (value) {
-                                      if (_endDate == null) return "Please select end date";
+                                      if (_endDate == null)
+                                        return "Please select end date";
                                       return null;
                                     },
                                   ),
@@ -312,10 +372,13 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
                                 decoration: InputDecoration(
                                   labelText: "Reason",
                                   border: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(12)),
+                                      borderRadius:
+                                          BorderRadius.circular(12)),
                                 ),
                                 validator: (value) {
-                                  if (value == null || value.trim().isEmpty) return "Please enter reason";
+                                  if (value == null ||
+                                      value.trim().isEmpty)
+                                    return "Please enter reason";
                                   return null;
                                 },
                               ),
@@ -323,12 +386,19 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
                               SizedBox(
                                 width: double.infinity,
                                 child: ElevatedButton.icon(
-                                  onPressed: _submitting ? null : _submitRequest,
+                                  onPressed: _submitting
+                                      ? null
+                                      : _submitRequest,
                                   icon: const Icon(Icons.send),
-                                  label: Text(_submitting ? "Submitting..." : "Submit Request"),
+                                  label: Text(_submitting
+                                      ? "Submitting..."
+                                      : "Submit Request"),
                                   style: ElevatedButton.styleFrom(
-                                    padding: const EdgeInsets.symmetric(vertical: 14),
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 14),
+                                    shape: RoundedRectangleBorder(
+                                        borderRadius:
+                                            BorderRadius.circular(12)),
                                   ),
                                 ),
                               ),

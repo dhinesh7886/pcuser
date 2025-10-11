@@ -24,8 +24,6 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
   bool _submitting = false;
 
   late AnimationController _animationController;
-
-  // resolved user id (will use widget.userId if provided; otherwise load from SharedPreferences)
   String? _resolvedUserId;
 
   @override
@@ -47,30 +45,19 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
   }
 
   Future<void> _initResolvedUserId() async {
-    // If widget.userId is non-empty, prefer that (keeps your existing behavior).
     final passed = widget.userId.trim();
     if (passed.isNotEmpty) {
-      setState(() {
-        _resolvedUserId = passed;
-      });
-      return;
+      _resolvedUserId = passed;
+    } else {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final stored = prefs.getString('id')?.trim();
+        if (stored != null && stored.isNotEmpty) _resolvedUserId = stored;
+      } catch (_) {}
     }
-
-    // otherwise read from SharedPreferences (id saved at login)
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final stored = prefs.getString('id')?.trim();
-      if (stored != null && stored.isNotEmpty) {
-        setState(() {
-          _resolvedUserId = stored;
-        });
-      }
-    } catch (_) {
-      // ignore failures — we keep _resolvedUserId null and will show validation if saving
-    }
+    setState(() {});
   }
 
-  // Pick Date
   Future<void> _pickDate() async {
     final today = DateTime.now();
     final picked = await showDatePicker(
@@ -82,7 +69,6 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
     if (picked != null) setState(() => _selectedDate = picked);
   }
 
-  // Pick From Time
   Future<void> _pickFromTime() async {
     final picked = await showTimePicker(
       context: context,
@@ -91,7 +77,6 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
     if (picked != null) setState(() => _fromTime = picked);
   }
 
-  // Pick To Time
   Future<void> _pickToTime() async {
     final picked = await showTimePicker(
       context: context,
@@ -100,15 +85,12 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
     if (picked != null) setState(() => _toTime = picked);
   }
 
-  // Resolve the user id to use (prefers resolved cached value, then widget.userId)
   String? _getActiveUserId() {
-    final passed = widget.userId.trim();
     if (_resolvedUserId != null && _resolvedUserId!.isNotEmpty) return _resolvedUserId;
-    if (passed.isNotEmpty) return passed;
+    if (widget.userId.trim().isNotEmpty) return widget.userId.trim();
     return null;
   }
 
-  // Submit Permission Request
   Future<void> _submitRequest() async {
     if (!_formKey.currentState!.validate() ||
         _selectedDate == null ||
@@ -116,6 +98,19 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
         _toTime == null) return;
 
     setState(() => _submitting = true);
+
+    final uid = _getActiveUserId();
+    if (uid == null || uid.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("User ID not found. Please login again.")),
+      );
+      setState(() => _submitting = false);
+      return;
+    }
+
+    // Fetch user info directly before saving
+    final doc = await FirebaseFirestore.instance.collection("Users").doc(uid).get();
+    final userInfo = doc.exists ? doc.data()! : {};
 
     final fromDateTime = DateTime(
       _selectedDate!.year,
@@ -133,23 +128,15 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
     );
 
     try {
-      final uid = _getActiveUserId();
-      if (uid == null || uid.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("User ID not found. Please login again.")),
-        );
-        setState(() => _submitting = false);
-        return;
-      }
-
       final userRef = FirebaseFirestore.instance.collection("Users").doc(uid);
 
-      // Debug print: confirm exact path
-      // Check your debug console to ensure this path is correct
-      print('Saving permission_request under: Users/$uid/permission_request');
-
-      // Save to subcollection named "permission_request" (singular) as requested
       await userRef.collection("permission_request").add({
+        "id": uid,
+        "name": userInfo['name'] ?? "",
+        "companyName": userInfo['companyName'] ?? "",
+        "department": userInfo['department'] ?? "",
+        "designation": userInfo['designation'] ?? "",
+        "subDivision": userInfo['subDivision'] ?? "",
         "date": Timestamp.fromDate(_selectedDate!),
         "fromTime": Timestamp.fromDate(fromDateTime),
         "toTime": Timestamp.fromDate(toDateTime),
@@ -177,28 +164,27 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
     }
   }
 
-  // Stream of current month requests
-  Stream<QuerySnapshot> _currentMonthRequestsStream() {
+  Stream<QuerySnapshot> _currentAndUpcomingRequestsStream() {
     final now = DateTime.now();
     final startOfMonth = DateTime(now.year, now.month, 1);
-    final endOfMonth = DateTime(now.year, now.month + 1, 0, 23, 59, 59);
+    final endOfNextMonth = DateTime(now.year, now.month + 2, 0, 23, 59, 59);
 
-    final uid = _getActiveUserId() ?? widget.userId; // fallback
-    // If uid is empty, this will still attempt — but widget.userId is required in constructor.
+    final uid = _getActiveUserId() ?? widget.userId;
+
     return FirebaseFirestore.instance
         .collection("Users")
         .doc(uid)
         .collection("permission_request")
         .where("date", isGreaterThanOrEqualTo: Timestamp.fromDate(startOfMonth))
-        .where("date", isLessThanOrEqualTo: Timestamp.fromDate(endOfMonth))
-        .orderBy("date", descending: true)
+        .where("date", isLessThanOrEqualTo: Timestamp.fromDate(endOfNextMonth))
+        .orderBy("date", descending: false)
         .snapshots();
   }
 
-  // Build List of Requests
   Widget _buildRequestList() {
+    final screenWidth = MediaQuery.of(context).size.width;
     return StreamBuilder<QuerySnapshot>(
-      stream: _currentMonthRequestsStream(),
+      stream: _currentAndUpcomingRequestsStream(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());
@@ -207,7 +193,7 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
         if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
           return const Padding(
             padding: EdgeInsets.all(16.0),
-            child: Text("No permission requests this month",
+            child: Text("No permission requests found",
                 style: TextStyle(fontSize: 14, color: Colors.white70)),
           );
         }
@@ -237,8 +223,7 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
 
             return Card(
               margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20)),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
               elevation: 8,
               shadowColor: Colors.black45,
               child: Padding(
@@ -250,36 +235,44 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
                       children: [
                         CircleAvatar(
                           backgroundColor: statusColor.withOpacity(0.2),
-                          child: Icon(Icons.pending_actions, color: statusColor),
+                          radius: screenWidth * 0.035,
+                          child: Icon(Icons.pending_actions,
+                              color: statusColor, size: screenWidth * 0.065),
                         ),
                         const SizedBox(width: 12),
                         Text(
                           DateFormat("dd MMM yyyy").format(date),
-                          style: const TextStyle(
-                              fontWeight: FontWeight.bold, fontSize: 16),
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: screenWidth * 0.048),
                         ),
                         const Spacer(),
                         Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 4),
+                          padding: EdgeInsets.symmetric(
+                              horizontal: screenWidth * 0.035,
+                              vertical: screenWidth * 0.012),
                           decoration: BoxDecoration(
                               color: statusColor.withOpacity(0.1),
                               borderRadius: BorderRadius.circular(12)),
                           child: Text(
                             status,
                             style: TextStyle(
-                                color: statusColor, fontWeight: FontWeight.bold),
+                                color: statusColor,
+                                fontWeight: FontWeight.bold,
+                                fontSize: screenWidth * 0.038),
                           ),
                         )
                       ],
                     ),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 10),
                     Text(
                       "From: ${DateFormat('hh:mm a').format(fromTime)} | To: ${DateFormat('hh:mm a').format(toTime)}",
-                      style: const TextStyle(fontSize: 14),
+                      style: TextStyle(
+                          fontSize: screenWidth * 0.045,
+                          fontWeight: FontWeight.w500), // From/To font size
                     ),
-                    const SizedBox(height: 4),
-                    Text(reason, style: const TextStyle(fontSize: 14)),
+                    const SizedBox(height: 6),
+                    Text(reason, style: TextStyle(fontSize: screenWidth * 0.040)),
                   ],
                 ),
               ),
@@ -292,8 +285,10 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
 
   @override
   Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.of(context).size.width;
+
     return Scaffold(
-      extendBodyBehindAppBar: true, // allows gradient behind AppBar
+      extendBodyBehindAppBar: true,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -306,7 +301,6 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
       ),
       body: Stack(
         children: [
-          // Animated Gradient Background
           AnimatedBuilder(
             animation: _animationController,
             builder: (context, child) {
@@ -314,7 +308,7 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
                     colors: [
-                      Colors.blueAccent.shade700,
+                      const Color.fromARGB(255, 230, 241, 70),
                       Colors.purpleAccent.shade200,
                       Colors.orangeAccent.shade200,
                     ],
@@ -330,20 +324,18 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
               );
             },
           ),
-          // Blur effect
           BackdropFilter(
             filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
             child: Container(color: Colors.black.withOpacity(0)),
           ),
           SafeArea(
             child: SingleChildScrollView(
-              child: Column(
-                children: [
-                  const SizedBox(height: 16),
-                  // Permission Form
-                  Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Card(
+              child: Padding(
+                padding: EdgeInsets.symmetric(horizontal: screenWidth * 0.03),
+                child: Column(
+                  children: [
+                    const SizedBox(height: 16),
+                    Card(
                       shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(20)),
                       elevation: 12,
@@ -364,10 +356,8 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
                                           : DateFormat("dd MMM yyyy")
                                               .format(_selectedDate!),
                                       border: OutlineInputBorder(
-                                          borderRadius:
-                                              BorderRadius.circular(12)),
-                                      suffixIcon:
-                                          const Icon(Icons.calendar_today),
+                                          borderRadius: BorderRadius.circular(12)),
+                                      suffixIcon: const Icon(Icons.calendar_today),
                                     ),
                                     validator: (value) {
                                       if (_selectedDate == null) {
@@ -387,14 +377,16 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
                                       icon: const Icon(Icons.access_time),
                                       label: Text(_fromTime == null
                                           ? "From Time"
-                                          : _fromTime!.format(context)),
+                                          : _fromTime!.format(context),
+                                          style: TextStyle(
+                                              fontSize: screenWidth * 0.040)), // From Time font size
                                       style: ElevatedButton.styleFrom(
-                                        padding: const EdgeInsets.symmetric(
-                                            vertical: 14),
+                                        padding:
+                                            const EdgeInsets.symmetric(vertical: 16),
                                         shape: RoundedRectangleBorder(
-                                            borderRadius:
-                                                BorderRadius.circular(12)),
-                                        backgroundColor: Colors.blueAccent,
+                                            borderRadius: BorderRadius.circular(12)),
+                                        backgroundColor:
+                                            const Color.fromARGB(255, 111, 228, 236),
                                       ),
                                     ),
                                   ),
@@ -405,14 +397,16 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
                                       icon: const Icon(Icons.access_time),
                                       label: Text(_toTime == null
                                           ? "To Time"
-                                          : _toTime!.format(context)),
+                                          : _toTime!.format(context),
+                                          style: TextStyle(
+                                              fontSize: screenWidth * 0.040)), // To Time font size
                                       style: ElevatedButton.styleFrom(
-                                        padding: const EdgeInsets.symmetric(
-                                            vertical: 14),
+                                        padding:
+                                            const EdgeInsets.symmetric(vertical: 16),
                                         shape: RoundedRectangleBorder(
-                                            borderRadius:
-                                                BorderRadius.circular(12)),
-                                        backgroundColor: Colors.blueAccent,
+                                            borderRadius: BorderRadius.circular(12)),
+                                        backgroundColor:
+                                            const Color.fromARGB(255, 111, 228, 236),
                                       ),
                                     ),
                                   ),
@@ -438,18 +432,22 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
                               SizedBox(
                                 width: double.infinity,
                                 child: ElevatedButton.icon(
-                                  onPressed: _submitting ? null : _submitRequest,
+                                  onPressed:
+                                      (_submitting || _resolvedUserId == null)
+                                          ? null
+                                          : _submitRequest,
                                   icon: const Icon(Icons.send),
-                                  label: Text(_submitting
-                                      ? "Submitting..."
-                                      : "Submit Request"),
+                                  label: Text(
+                                    _submitting ? "Submitting..." : "Submit Request",
+                                    style: TextStyle(
+                                        fontSize: screenWidth * 0.043), // Submit button font size
+                                  ),
                                   style: ElevatedButton.styleFrom(
-                                    padding: const EdgeInsets.symmetric(
-                                        vertical: 14),
+                                    padding: const EdgeInsets.symmetric(vertical: 16),
                                     shape: RoundedRectangleBorder(
-                                        borderRadius:
-                                            BorderRadius.circular(12)),
-                                    backgroundColor: Colors.blueAccent,
+                                        borderRadius: BorderRadius.circular(12)),
+                                    backgroundColor:
+                                        const Color.fromARGB(255, 111, 228, 236),
                                   ),
                                 ),
                               ),
@@ -458,25 +456,22 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
                         ),
                       ),
                     ),
-                  ),
-                  // Current Month Permission Requests
-                  const SizedBox(height: 8),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                    child: Align(
-                        alignment: Alignment.centerLeft,
-                        child: Text(
-                          "Current Month Requests",
-                          style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 18,
-                              color: Colors.white70),
-                        )),
-                  ),
-                  const SizedBox(height: 8),
-                  _buildRequestList(),
-                  const SizedBox(height: 24),
-                ],
+                    const SizedBox(height: 12),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        "Current & Upcoming Month Requests",
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: screenWidth * 0.045,
+                            color: const Color.fromARGB(179, 3, 0, 0)),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    _buildRequestList(),
+                    const SizedBox(height: 24),
+                  ],
+                ),
               ),
             ),
           ),
