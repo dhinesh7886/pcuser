@@ -9,12 +9,17 @@ class RazorpayService {
     _razorpay.on(Razorpay.EVENT_EXTERNAL_WALLET, _handleExternalWallet);
   }
 
-  void pay({required double amount, required String email, required String contact}) {
+  void pay(
+      {required double amount,
+      required String email,
+      required String contact}) {
+    // rzp_test_RKBhHHv1UUVxrl,VbzPvrbPjPu25jFxc931MrPR
+
     var options = {
-      'key': 'YOUR_KEY_ID',
+      'key': 'rzp_test_RKBhHHv1UUVxrl',
       'amount': (amount * 100).toInt(), // amount in paise
-      'name': 'Your App Name',
-      'description': 'Payment Description',
+      'name': 'PC USER',
+      'description': 'To pay Cab amount',
       'prefill': {'contact': contact, 'email': email},
       'theme': {'color': '#F37254'}
     };

@@ -137,6 +137,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       }
 
       LocationPermission permission = await Geolocator.checkPermission();
+      print(permission);
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
         if (permission == LocationPermission.denied) {
@@ -170,8 +171,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           .get();
 
       final punchRecords = todayRecordsSnapshot.docs
-          .where((doc) =>
-              doc['type'] == 'punch_in' || doc['type'] == 'punch_out')
+          .where(
+              (doc) => doc['type'] == 'punch_in' || doc['type'] == 'punch_out')
           .toList();
 
       if (punchRecords.length >= 2) {
@@ -252,12 +253,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         QueryDocumentSnapshot? holidayDoc;
 
         try {
-          punchInDoc =
-              snapshot.data!.docs.firstWhere((doc) => doc['type'] == 'punch_in');
+          punchInDoc = snapshot.data!.docs
+              .firstWhere((doc) => doc['type'] == 'punch_in');
         } catch (_) {}
         try {
-          punchOutDoc =
-              snapshot.data!.docs.firstWhere((doc) => doc['type'] == 'punch_out');
+          punchOutDoc = snapshot.data!.docs
+              .firstWhere((doc) => doc['type'] == 'punch_out');
         } catch (_) {}
         try {
           holidayDoc =
@@ -315,8 +316,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         ),
         title: Text("${isPunchIn ? "Punch In" : "Punch Out"} • $timeStr",
             style: TextStyle(fontSize: width * 0.045)),
-        subtitle:
-            Text(address, style: TextStyle(fontSize: width * 0.035)),
+        subtitle: Text(address, style: TextStyle(fontSize: width * 0.035)),
       ),
     );
   }
@@ -465,8 +465,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                   .length ??
               0;
 
-          String label =
-              count == 0 ? "Punch In" : count == 1 ? "Punch Out" : "Completed";
+          String label = count == 0
+              ? "Punch In"
+              : count == 1
+                  ? "Punch Out"
+                  : "Completed";
 
           return FloatingActionButton.extended(
             onPressed: (saving || count >= 2) ? null : _markAttendance,

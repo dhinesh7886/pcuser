@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:pcuser/mapview.dart';
+import 'package:pcuser/razor_pay_service.dart';
 
 class CabBookingPage extends StatefulWidget {
   const CabBookingPage({super.key});
@@ -15,9 +16,10 @@ class CabBookingPage extends StatefulWidget {
 class _CabBookingPageState extends State<CabBookingPage> {
   final _formKey = GlobalKey<FormState>();
   final TextEditingController _pickupController = TextEditingController();
+  final TextEditingController _dropController = TextEditingController();
   final TextEditingController _daysController = TextEditingController();
   final TextEditingController _notesController = TextEditingController();
-
+  double amount = 100;
   DateTime? _startDate;
   TimeOfDay? _loginTime;
   bool _isLoading = false;
@@ -169,54 +171,120 @@ class _CabBookingPageState extends State<CabBookingPage> {
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  suffixIcon:
-                      _pickupController.text.isEmpty
-                          ? IconButton(
-                            icon: const Icon(
-                              Icons.map,
-                              color: Colors.deepPurple,
-                            ),
-                            onPressed: () async {
-                              final result = await Navigator.of(context).push(
-                                MaterialPageRoute(
-                                  builder: (context) => const MapView(),
-                                ),
+                  suffixIcon: _pickupController.text.isEmpty
+                      ? IconButton(
+                          icon: const Icon(
+                            Icons.map,
+                            color: Colors.deepPurple,
+                          ),
+                          onPressed: () async {
+                            final result = await Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (context) => const MapView(),
+                              ),
+                            );
+                            if (result != null) {
+                              setState(() {
+                                _pickupLatLng = result["latLng"];
+                                _pickupController.text = result["address"];
+                              });
+                            }
+                          },
+                        )
+                      : IconButton(
+                          icon: const Icon(
+                            Icons.search,
+                            color: Colors.deepPurple,
+                          ),
+                          onPressed: () async {
+                            try {
+                              final locations = await locationFromAddress(
+                                _pickupController.text.trim(),
                               );
-                              if (result != null) {
+                              if (locations.isNotEmpty) {
                                 setState(() {
-                                  _pickupLatLng = result["latLng"];
-                                  _pickupController.text = result["address"];
+                                  _pickupLatLng = LatLng(
+                                    locations.first.latitude,
+                                    locations.first.longitude,
+                                  );
                                 });
                               }
-                            },
-                          )
-                          : IconButton(
-                            icon: const Icon(
-                              Icons.search,
-                              color: Colors.deepPurple,
-                            ),
-                            onPressed: () async {
-                              try {
-                                final locations = await locationFromAddress(
-                                  _pickupController.text.trim(),
-                                );
-                                if (locations.isNotEmpty) {
-                                  setState(() {
-                                    _pickupLatLng = LatLng(
-                                      locations.first.latitude,
-                                      locations.first.longitude,
-                                    );
-                                  });
-                                }
-                              } catch (e) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text("Could not find location"),
-                                  ),
-                                );
-                              }
-                            },
+                            } catch (e) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text("Could not find location"),
+                                ),
+                              );
+                            }
+                          },
+                        ),
+                ),
+                validator: (value) {
+                  if (value == null || value.isEmpty) {
+                    return "Enter pickup place";
+                  }
+                  return null;
+                },
+              ),
+              SizedBox(
+                height: 15,
+              ),
+              // Drop place
+              TextFormField(
+                controller: _dropController,
+                decoration: InputDecoration(
+                  labelText: "Dropping Place",
+                  prefixIcon: const Icon(Icons.location_on),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  suffixIcon: _dropController.text.isEmpty
+                      ? IconButton(
+                          icon: const Icon(
+                            Icons.map,
+                            color: Colors.deepPurple,
                           ),
+                          onPressed: () async {
+                            final result = await Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (context) => const MapView(),
+                              ),
+                            );
+                            if (result != null) {
+                              setState(() {
+                                _pickupLatLng = result["latLng"];
+                                _dropController.text = result["address"];
+                              });
+                            }
+                          },
+                        )
+                      : IconButton(
+                          icon: const Icon(
+                            Icons.search,
+                            color: Colors.deepPurple,
+                          ),
+                          onPressed: () async {
+                            try {
+                              final locations = await locationFromAddress(
+                                _dropController.text.trim(),
+                              );
+                              if (locations.isNotEmpty) {
+                                setState(() {
+                                  _pickupLatLng = LatLng(
+                                    locations.first.latitude,
+                                    locations.first.longitude,
+                                  );
+                                });
+                              }
+                            } catch (e) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text("Could not find location"),
+                                ),
+                              );
+                            }
+                          },
+                        ),
                 ),
                 validator: (value) {
                   if (value == null || value.isEmpty) {
@@ -284,12 +352,11 @@ class _CabBookingPageState extends State<CabBookingPage> {
                       ),
                     ),
                     onPressed: _isLoading ? null : _submitBooking,
-                    icon:
-                        _isLoading
-                            ? const CircularProgressIndicator(
-                              color: Colors.white,
-                            )
-                            : const Icon(Icons.send),
+                    icon: _isLoading
+                        ? const CircularProgressIndicator(
+                            color: Colors.white,
+                          )
+                        : const Icon(Icons.send),
                     label: const Text("Submit"),
                   ),
                   OutlinedButton.icon(
@@ -310,6 +377,14 @@ class _CabBookingPageState extends State<CabBookingPage> {
                   ),
                 ],
               ),
+              ElevatedButton(
+                  onPressed: () async {
+                    RazorpayService().pay(
+                        amount: amount,
+                        email: "esakkirajam78@gmail.com",
+                        contact: "7708072172");
+                  },
+                  child: Text("Pay"))
             ],
           ),
         ),

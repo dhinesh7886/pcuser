@@ -7,6 +7,7 @@ import 'package:pcuser/bookings.dart';
 import 'package:pcuser/home_widget.dart';
 import 'package:pcuser/login_page.dart';
 import 'package:pcuser/profile.dart';
+import 'package:pcuser/razor_pay_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class UsersHomePage extends StatefulWidget {
@@ -68,19 +69,6 @@ class _UsersHomePageState extends State<UsersHomePage> {
           ? AppBar(
               title: const Text('PC Users'),
               backgroundColor: const Color.fromARGB(255, 247, 126, 227),
-              actions: [
-                IconButton(
-                  onPressed: () async {
-                    List<Location> locations = await locationFromAddress(
-                      "Tirunelveli",
-                    );
-                    for (var element in locations) {
-                      debugPrint(element.toString());
-                    }
-                  },
-                  icon: const Icon(Icons.location_city),
-                ),
-              ],
             )
           : null,
       drawer: Drawer(
@@ -115,15 +103,14 @@ class _UsersHomePageState extends State<UsersHomePage> {
                             ),
                             CircleAvatar(
                               radius: 30,
-                              backgroundImage:
-                                  (userData!['imageUrl'] != null &&
-                                          userData!['imageUrl']
-                                              .toString()
-                                              .isNotEmpty)
-                                      ? NetworkImage(userData!['imageUrl'])
-                                      : const NetworkImage(
-                                          'https://via.placeholder.com/150',
-                                        ),
+                              backgroundImage: (userData!['imageUrl'] != null &&
+                                      userData!['imageUrl']
+                                          .toString()
+                                          .isNotEmpty)
+                                  ? NetworkImage(userData!['imageUrl'])
+                                  : const NetworkImage(
+                                      'https://via.placeholder.com/150',
+                                    ),
                             ),
                           ],
                         ),
@@ -169,14 +156,12 @@ class _UsersHomePageState extends State<UsersHomePage> {
                         title: const Text('Signout'),
                         onTap: () async {
                           await FirebaseAuth.instance.signOut();
-                          final prefs =
-                              await SharedPreferences.getInstance();
+                          final prefs = await SharedPreferences.getInstance();
                           await prefs.remove('id');
                           if (!mounted) return;
                           Navigator.of(context).pushReplacement(
                             MaterialPageRoute(
-                              builder: (context) =>
-                                  const StylishLoginPage(),
+                              builder: (context) => const StylishLoginPage(),
                             ),
                           );
                         },
