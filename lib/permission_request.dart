@@ -108,7 +108,6 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
       return;
     }
 
-    // Fetch user info directly before saving
     final doc = await FirebaseFirestore.instance.collection("Users").doc(uid).get();
     final userInfo = doc.exists ? doc.data()! : {};
 
@@ -164,10 +163,10 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
     }
   }
 
+  // Only current and future requests
   Stream<QuerySnapshot> _currentAndUpcomingRequestsStream() {
     final now = DateTime.now();
-    final startOfMonth = DateTime(now.year, now.month, 1);
-    final endOfNextMonth = DateTime(now.year, now.month + 2, 0, 23, 59, 59);
+    final todayStart = DateTime(now.year, now.month, now.day);
 
     final uid = _getActiveUserId() ?? widget.userId;
 
@@ -175,8 +174,7 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
         .collection("Users")
         .doc(uid)
         .collection("permission_request")
-        .where("date", isGreaterThanOrEqualTo: Timestamp.fromDate(startOfMonth))
-        .where("date", isLessThanOrEqualTo: Timestamp.fromDate(endOfNextMonth))
+        .where("date", isGreaterThanOrEqualTo: Timestamp.fromDate(todayStart))
         .orderBy("date", descending: false)
         .snapshots();
   }
@@ -194,7 +192,8 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
           return const Padding(
             padding: EdgeInsets.all(16.0),
             child: Text("No permission requests found",
-                style: TextStyle(fontSize: 14, color: Colors.white70)),
+                style: TextStyle(fontSize: 22, color: Color.fromARGB(255, 5, 4, 0),
+                fontWeight: FontWeight.bold)),
           );
         }
 
@@ -269,7 +268,7 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
                       "From: ${DateFormat('hh:mm a').format(fromTime)} | To: ${DateFormat('hh:mm a').format(toTime)}",
                       style: TextStyle(
                           fontSize: screenWidth * 0.045,
-                          fontWeight: FontWeight.w500), // From/To font size
+                          fontWeight: FontWeight.w500),
                     ),
                     const SizedBox(height: 6),
                     Text(reason, style: TextStyle(fontSize: screenWidth * 0.040)),
@@ -379,7 +378,7 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
                                           ? "From Time"
                                           : _fromTime!.format(context),
                                           style: TextStyle(
-                                              fontSize: screenWidth * 0.040)), // From Time font size
+                                              fontSize: screenWidth * 0.040)),
                                       style: ElevatedButton.styleFrom(
                                         padding:
                                             const EdgeInsets.symmetric(vertical: 16),
@@ -399,7 +398,7 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
                                           ? "To Time"
                                           : _toTime!.format(context),
                                           style: TextStyle(
-                                              fontSize: screenWidth * 0.040)), // To Time font size
+                                              fontSize: screenWidth * 0.040)),
                                       style: ElevatedButton.styleFrom(
                                         padding:
                                             const EdgeInsets.symmetric(vertical: 16),
@@ -440,7 +439,7 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
                                   label: Text(
                                     _submitting ? "Submitting..." : "Submit Request",
                                     style: TextStyle(
-                                        fontSize: screenWidth * 0.043), // Submit button font size
+                                        fontSize: screenWidth * 0.043),
                                   ),
                                   style: ElevatedButton.styleFrom(
                                     padding: const EdgeInsets.symmetric(vertical: 16),
@@ -460,7 +459,7 @@ class _PermissionRequestScreenState extends State<PermissionRequestScreen>
                     Align(
                       alignment: Alignment.centerLeft,
                       child: Text(
-                        "Current & Upcoming Month Requests",
+                        "Current & Upcoming Requests",
                         style: TextStyle(
                             fontWeight: FontWeight.bold,
                             fontSize: screenWidth * 0.045,

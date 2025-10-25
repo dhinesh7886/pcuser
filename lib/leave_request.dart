@@ -37,7 +37,7 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
       duration: const Duration(seconds: 6),
     )..repeat(reverse: true);
 
-    _loadUserDetails();
+    _fetchUserDetails();
   }
 
   @override
@@ -47,15 +47,39 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
     super.dispose();
   }
 
-  Future<void> _loadUserDetails() async {
-    final prefs = await SharedPreferences.getInstance();
-    setState(() {
-      _userName = prefs.getString("name") ?? "";
-      _subDivision = prefs.getString("subDivision") ?? "";
-      _companyName = prefs.getString("companyName") ?? "";
-      _department = prefs.getString("department") ?? "";
-      _designation = prefs.getString("designation") ?? "";
-    });
+  /// ✅ Fetch user details from Firestore using userId
+  Future<void> _fetchUserDetails() async {
+    try {
+      final userDoc = await FirebaseFirestore.instance
+          .collection("Users")
+          .doc(widget.userId)
+          .get();
+
+      if (userDoc.exists) {
+        final data = userDoc.data()!;
+        setState(() {
+          _userName = data['name'] ?? '';
+          _companyName = data['companyName'] ?? '';
+          _department = data['department'] ?? '';
+          _designation = data['designation'] ?? '';
+          _subDivision = data['subDivision'] ?? '';
+        });
+
+        // Store details in SharedPreferences for later use
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString("name", _userName ?? '');
+        await prefs.setString("companyName", _companyName ?? '');
+        await prefs.setString("department", _department ?? '');
+        await prefs.setString("designation", _designation ?? '');
+        await prefs.setString("subDivision", _subDivision ?? '');
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("User not found in Firestore")),
+        );
+      }
+    } catch (e) {
+      debugPrint("Error fetching user details: $e");
+    }
   }
 
   Future<void> _pickStartDate() async {
@@ -80,6 +104,7 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
     if (picked != null) setState(() => _endDate = picked);
   }
 
+  /// ✅ Submit leave request and store full user details in Firestore
   Future<void> _submitRequest() async {
     if (!_formKey.currentState!.validate() ||
         _startDate == null ||
@@ -91,7 +116,7 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
       final userRef =
           FirebaseFirestore.instance.collection("Users").doc(widget.userId);
 
-      // Check overlap
+      // Check overlapping leave dates
       final existingLeavesSnapshot =
           await userRef.collection("leave_requests").get();
       bool overlap = existingLeavesSnapshot.docs.any((doc) {
@@ -106,13 +131,13 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
               content:
-                  Text("Leave request overlaps with existing request")),
+                  Text("Leave request overlaps with an existing request")),
         );
         setState(() => _submitting = false);
         return;
       }
 
-      // Add leave request with user details
+      // Add leave request with all user details
       await userRef.collection("leave_requests").add({
         "startDate": Timestamp.fromDate(_startDate!),
         "endDate": Timestamp.fromDate(_endDate!),
@@ -120,11 +145,11 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
         "status": "Waiting for Approval",
         "createdAt": FieldValue.serverTimestamp(),
         "id": widget.userId,
-        "name": _userName,
-        "subDivision": _subDivision,
-        "companyName": _companyName,
-        "department": _department,
-        "designation": _designation,
+        "name": _userName ?? '',
+        "subDivision": _subDivision ?? '',
+        "companyName": _companyName ?? '',
+        "department": _department ?? '',
+        "designation": _designation ?? '',
       });
 
       _reasonController.clear();
@@ -134,23 +159,23 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Leave request submitted")),
+        const SnackBar(content: Text("Leave request submitted successfully")),
       );
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Error: $e")),
+        SnackBar(content: Text("Error submitting leave request: $e")),
       );
     } finally {
       setState(() => _submitting = false);
     }
   }
 
-  // ✅ Updated to filter current + upcoming month only
+  /// ✅ Stream only current + upcoming month leaves
   Stream<QuerySnapshot> _leaveRequestsStream() {
     final now = DateTime.now();
     final startOfCurrentMonth = DateTime(now.year, now.month, 1);
     final startOfNextMonth =
-        DateTime(now.year, now.month + 2, 1); // end of upcoming month
+        DateTime(now.year, now.month + 2, 1); // include next month
 
     return FirebaseFirestore.instance
         .collection("Users")
@@ -158,8 +183,7 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
         .collection("leave_requests")
         .where("startDate",
             isGreaterThanOrEqualTo: Timestamp.fromDate(startOfCurrentMonth))
-        .where("startDate",
-            isLessThan: Timestamp.fromDate(startOfNextMonth))
+        .where("startDate", isLessThan: Timestamp.fromDate(startOfNextMonth))
         .orderBy("startDate", descending: false)
         .snapshots();
   }
@@ -334,8 +358,9 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
                                           const Icon(Icons.calendar_today),
                                     ),
                                     validator: (value) {
-                                      if (_startDate == null)
+                                      if (_startDate == null) {
                                         return "Please select start date";
+                                      }
                                       return null;
                                     },
                                   ),
@@ -358,8 +383,9 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
                                           const Icon(Icons.calendar_today),
                                     ),
                                     validator: (value) {
-                                      if (_endDate == null)
+                                      if (_endDate == null) {
                                         return "Please select end date";
+                                      }
                                       return null;
                                     },
                                   ),
@@ -376,9 +402,9 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
                                           BorderRadius.circular(12)),
                                 ),
                                 validator: (value) {
-                                  if (value == null ||
-                                      value.trim().isEmpty)
+                                  if (value == null || value.trim().isEmpty) {
                                     return "Please enter reason";
+                                  }
                                   return null;
                                 },
                               ),

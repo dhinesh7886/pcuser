@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 import 'package:pcuser/permission_request.dart';
 import 'package:pcuser/leave_request.dart';
 import 'package:pcuser/attendance_data.dart';
+import 'dart:async';
 
 class AttendanceScreen extends StatefulWidget {
   final String userId;
@@ -18,10 +19,12 @@ class AttendanceScreen extends StatefulWidget {
 class _AttendanceScreenState extends State<AttendanceScreen> {
   bool saving = false;
   String status = "Tap the button to mark attendance";
+  bool showRetry = false;
   String? empName;
   String? companyName;
   String? subDivision;
   bool _loadingUser = true;
+  String? todayHolidayName;
 
   @override
   void initState() {
@@ -54,18 +57,29 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
-  DateTime _startOfDay() =>
-      DateTime(DateTime.now().year, DateTime.now().month, DateTime.now().day);
+  DateTime _startOfDay(DateTime date) =>
+      DateTime(date.year, date.month, date.day);
 
-  DateTime _endOfDay() => _startOfDay().add(const Duration(days: 1));
+  DateTime _endOfDay(DateTime date) =>
+      DateTime(date.year, date.month, date.day).add(const Duration(days: 1));
 
   Stream<QuerySnapshot> _todayRecordsStream() {
+    final now = DateTime.now();
     return FirebaseFirestore.instance
         .collection('attendance')
         .doc(widget.userId)
         .collection('records')
-        .where('timestamp', isGreaterThanOrEqualTo: _startOfDay())
-        .where('timestamp', isLessThan: _endOfDay())
+        .where('timestamp', isGreaterThanOrEqualTo: _startOfDay(now))
+        .where('timestamp', isLessThan: _endOfDay(now))
+        .orderBy('timestamp')
+        .snapshots();
+  }
+
+  Stream<QuerySnapshot> _allRecordsStream() {
+    return FirebaseFirestore.instance
+        .collection('attendance')
+        .doc(widget.userId)
+        .collection('records')
         .orderBy('timestamp')
         .snapshots();
   }
@@ -94,6 +108,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     if (holidays == null || !holidays.containsKey(dateKey)) return;
 
     final reason = holidays[dateKey]!;
+    todayHolidayName = reason;
 
     final recordRef = FirebaseFirestore.instance
         .collection('attendance')
@@ -118,7 +133,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       if (mounted) {
         setState(() {
           status =
-              "Holiday marked automatically: $reason (${DateFormat('dd/MM/yyyy').format(now)})";
+              "Holiday today: $reason (${DateFormat('dd/MM/yyyy').format(now)})";
         });
       }
     }
@@ -129,67 +144,93 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     setState(() {
       saving = true;
       status = "Marking attendance...";
+      showRetry = false;
     });
 
     try {
-      // Check location services
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        setState(() => status = "Location services are disabled.");
+        setState(() {
+          status = "Location services are disabled.";
+          showRetry = true;
+        });
         return;
       }
 
-      // Check permissions
       LocationPermission permission = await Geolocator.checkPermission();
-      print(permission);
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
         if (permission == LocationPermission.denied) {
-          setState(() => status = "Location permission denied.");
+          setState(() {
+            status = "Location permission denied.";
+            showRetry = true;
+          });
           return;
         }
       }
       if (permission == LocationPermission.deniedForever) {
-        setState(() => status = "Location permanently denied.");
+        setState(() {
+          status = "Location permanently denied.";
+          showRetry = true;
+        });
         return;
       }
 
       final now = DateTime.now();
-      final dateKey = DateFormat('ddMMyyyy').format(now);
-
-      // Adjust early morning punch (before 5 AM)
       DateTime adjustedDate = now;
       if (now.hour < 5) {
         adjustedDate = now.subtract(const Duration(days: 1));
       }
 
-      final startOfDay =
-          DateTime(adjustedDate.year, adjustedDate.month, adjustedDate.day);
-      final endOfDay = startOfDay.add(const Duration(days: 1));
+      final dateKey = DateFormat('ddMMyyyy').format(adjustedDate);
 
-      // Get today’s existing punches
-      final todayRecordsSnapshot = await FirebaseFirestore.instance
+      final lastRecordSnapshot = await FirebaseFirestore.instance
           .collection('attendance')
           .doc(widget.userId)
           .collection('records')
-          .where('timestamp', isGreaterThanOrEqualTo: startOfDay)
-          .where('timestamp', isLessThan: endOfDay)
+          .orderBy('timestamp', descending: true)
+          .limit(1)
           .get();
 
-      final punchRecords = todayRecordsSnapshot.docs
-          .where(
-              (doc) => doc['type'] == 'punch_in' || doc['type'] == 'punch_out')
-          .toList();
+      final lastRecord =
+          lastRecordSnapshot.docs.isNotEmpty ? lastRecordSnapshot.docs.first : null;
 
-      if (punchRecords.length >= 2) {
-        setState(() => status = "Already punched in & out today!");
-        return;
+      String type;
+
+      // NIGHT SHIFT LOGIC
+      if (lastRecord != null && lastRecord['type'] == 'punch_in') {
+        final lastPunchTime = (lastRecord['timestamp'] as Timestamp).toDate();
+        final fiveAMToday = DateTime(lastPunchTime.year,
+            lastPunchTime.month, lastPunchTime.day + 1, 5, 0, 0);
+        if (now.isBefore(fiveAMToday)) {
+          type = 'punch_out'; // Allow punch out for previous day
+        } else {
+          type = 'punch_in'; // After 5AM, treat as new day punch in
+        }
+      } else {
+        type = (lastRecord != null && lastRecord['type'] == 'punch_out')
+            ? 'punch_in'
+            : 'punch_in';
       }
 
-      // Get location (with timeout)
-      Position pos = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.medium,
-      ).timeout(const Duration(seconds: 15));
+      Position? pos;
+      try {
+        pos = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.best,
+        ).timeout(const Duration(seconds: 30));
+      } on TimeoutException {
+        setState(() {
+          status = "Location lookup timed out, using last known position...";
+        });
+        pos = await Geolocator.getLastKnownPosition();
+        if (pos == null) {
+          setState(() {
+            status = "Unable to get location, please try again.";
+            showRetry = true;
+          });
+          return;
+        }
+      }
 
       String address = "Unknown location";
       try {
@@ -209,8 +250,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         address = "Unable to fetch address";
       }
 
-      final type = punchRecords.isEmpty ? 'punch_in' : 'punch_out';
-
       await FirebaseFirestore.instance
           .collection('attendance')
           .doc(widget.userId)
@@ -223,19 +262,61 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         'address': address,
         'type': type,
         'dateKey': dateKey,
+        'holidayName': todayHolidayName,
       });
 
       if (mounted) {
         setState(() {
           status =
               "${type == 'punch_in' ? "Punch In" : "Punch Out"} saved at ${DateFormat('HH:mm').format(now)}\n$address";
+          showRetry = false;
         });
       }
     } catch (e) {
-      setState(() => status = "Error saving attendance: $e");
+      setState(() {
+        status = "Error saving attendance: $e";
+        showRetry = true;
+      });
     } finally {
       if (mounted) setState(() => saving = false);
     }
+  }
+
+  Widget _buildStatusCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.85),
+        borderRadius: BorderRadius.circular(15),
+      ),
+      child: Column(
+        children: [
+          Text(
+            status,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.black87),
+          ),
+          if (showRetry)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: ElevatedButton.icon(
+                onPressed: _markAttendance,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.redAccent,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8)),
+                ),
+                icon: const Icon(Icons.refresh, color: Colors.white),
+                label: const Text(
+                  "Retry",
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
   }
 
   Widget _buildRecordsList() {
@@ -253,30 +334,17 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           );
         }
 
-        QueryDocumentSnapshot? punchInDoc;
-        QueryDocumentSnapshot? punchOutDoc;
-        QueryDocumentSnapshot? holidayDoc;
-
-        try {
-          punchInDoc =
-              snapshot.data!.docs.firstWhere((d) => d['type'] == 'punch_in');
-        } catch (_) {}
-        try {
-          punchOutDoc =
-              snapshot.data!.docs.firstWhere((d) => d['type'] == 'punch_out');
-        } catch (_) {}
-        try {
-          holidayDoc =
-              snapshot.data!.docs.firstWhere((d) => d['type'] == 'holiday');
-        } catch (_) {}
+        final docs = snapshot.data!.docs;
 
         return SingleChildScrollView(
           child: Column(
-            children: [
-              if (holidayDoc != null) _buildHolidayCard(holidayDoc),
-              if (punchInDoc != null) _buildRecordCard(punchInDoc, true),
-              if (punchOutDoc != null) _buildRecordCard(punchOutDoc, false),
-            ],
+            children: docs.map((doc) {
+              final data = doc.data() as Map<String, dynamic>;
+              final type = data['type'];
+              if (type == 'holiday') return _buildHolidayCard(doc);
+              return _buildRecordCard(
+                  doc, type == 'punch_in' ? true : false);
+            }).toList(),
           ),
         );
       },
@@ -304,6 +372,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     final ts = (data['timestamp'] as Timestamp?)?.toDate();
     final timeStr = ts != null ? DateFormat('HH:mm').format(ts) : 'Pending';
     final address = data['address'] ?? 'No address';
+    final holidayName = data['holidayName'];
     final width = MediaQuery.of(context).size.width;
 
     return Card(
@@ -318,8 +387,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             size: width * 0.07,
           ),
         ),
-        title: Text("${isPunchIn ? "Punch In" : "Punch Out"} • $timeStr",
-            style: TextStyle(fontSize: width * 0.045)),
+        title: Text(
+          "${isPunchIn ? "Punch In" : "Punch Out"} • $timeStr" +
+              (holidayName != null ? " • $holidayName" : ""),
+          style: TextStyle(fontSize: width * 0.045),
+        ),
         subtitle: Text(address, style: TextStyle(fontSize: width * 0.035)),
       ),
     );
@@ -379,17 +451,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
               padding: const EdgeInsets.all(12.0),
               child: Column(
                 children: [
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.85),
-                      borderRadius: BorderRadius.circular(15),
-                    ),
-                    child: Text(status,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(color: Colors.black87)),
-                  ),
+                  _buildStatusCard(),
                   const SizedBox(height: 12),
                   const Divider(color: Colors.white70, thickness: 1),
                   const Text(
@@ -443,17 +505,37 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         ),
       ),
       floatingActionButton: StreamBuilder<QuerySnapshot>(
-        stream: _todayRecordsStream(),
+        stream: _allRecordsStream(),
         builder: (context, snapshot) {
-          int count = snapshot.data?.docs
-                  .where((d) =>
-                      d['type'] == 'punch_in' || d['type'] == 'punch_out')
-                  .length ??
-              0;
-          String label =
-              count == 0 ? "Punch In" : count == 1 ? "Punch Out" : "Completed";
+          final docs = snapshot.data?.docs ?? [];
+          QueryDocumentSnapshot? lastPunch;
+          try {
+            lastPunch = docs.lastWhere(
+              (d) => d['type'] == 'punch_in' || d['type'] == 'punch_out',
+            );
+          } catch (e) {
+            lastPunch = null;
+          }
+
+          String label;
+          if (lastPunch != null && lastPunch['type'] == 'punch_in') {
+            final lastPunchTime =
+                (lastPunch['timestamp'] as Timestamp).toDate();
+            final fiveAMToday = DateTime(lastPunchTime.year,
+                lastPunchTime.month, lastPunchTime.day + 1, 5, 0, 0);
+            if (DateTime.now().isBefore(fiveAMToday)) {
+              label = "Punch Out";
+            } else {
+              label = "Punch In";
+            }
+          } else {
+            label = (lastPunch == null || lastPunch['type'] == 'punch_out')
+                ? "Punch In"
+                : "Punch Out";
+          }
+
           return FloatingActionButton.extended(
-            onPressed: (saving || count >= 2) ? null : _markAttendance,
+            onPressed: saving ? null : _markAttendance,
             icon: const Icon(Icons.fingerprint),
             label: Text(label),
             backgroundColor: const Color.fromARGB(255, 240, 217, 87),
