@@ -18,13 +18,22 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
   DateTime? _startDate;
   DateTime? _endDate;
 
-  /// Track expanded state for each date
   final Map<DateTime, bool> _expandedDates = {};
+
+  final TextEditingController _startDateController = TextEditingController();
+  final TextEditingController _endDateController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     _loadUserName();
+  }
+
+  @override
+  void dispose() {
+    _startDateController.dispose();
+    _endDateController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadUserName() async {
@@ -51,12 +60,17 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
   Future<Map<DateTime, Map<String, dynamic>>> _fetchAttendance() async {
     if (_startDate == null || _endDate == null) return {};
 
+    DateTime start =
+        DateTime(_startDate!.year, _startDate!.month, _startDate!.day, 0, 0, 0);
+    DateTime end =
+        DateTime(_endDate!.year, _endDate!.month, _endDate!.day, 23, 59, 59);
+
     final snapshot = await FirebaseFirestore.instance
         .collection("attendance")
         .doc(widget.userId)
         .collection("records")
-        .where("timestamp", isGreaterThanOrEqualTo: _startDate!)
-        .where("timestamp", isLessThanOrEqualTo: _endDate!)
+        .where("timestamp", isGreaterThanOrEqualTo: start)
+        .where("timestamp", isLessThanOrEqualTo: end)
         .orderBy("timestamp")
         .get();
 
@@ -77,19 +91,19 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
           "out": null,
           "inAddress": null,
           "outAddress": null,
-          "type": type,
+          "type": null,
         };
       }
 
       if (type == "punch_in") {
         data[dateKey]!["in"] = ts;
         data[dateKey]!["inAddress"] = address;
-      }
-      if (type == "punch_out") {
+      } else if (type == "punch_out") {
         data[dateKey]!["out"] = ts;
         data[dateKey]!["outAddress"] = address;
+      } else if (type == "week_off" || type == "holiday") {
+        data[dateKey]!["type"] = type;
       }
-      if (type == "week_off") data[dateKey]!["type"] = "week_off";
     }
 
     return data;
@@ -111,8 +125,10 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
     if (picked != null) {
       setState(() {
         _startDate = picked;
+        _startDateController.text = DateFormat("dd MMM yyyy").format(picked);
         if (_endDate != null && _endDate!.isBefore(_startDate!)) {
           _endDate = _startDate;
+          _endDateController.text = DateFormat("dd MMM yyyy").format(_endDate!);
         }
         _expandedDates.clear();
       });
@@ -129,6 +145,7 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
     if (picked != null) {
       setState(() {
         _endDate = picked;
+        _endDateController.text = DateFormat("dd MMM yyyy").format(picked);
         _expandedDates.clear();
       });
     }
@@ -150,17 +167,17 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
         title: Text("${_empName ?? widget.userId} (${widget.userId})"),
         centerTitle: true,
         backgroundColor: const Color.fromARGB(255, 163, 245, 125),
-        elevation: 3,
       ),
       body: Column(
         children: [
-          // Date range selection fields
+          // Date selectors
           Padding(
             padding: const EdgeInsets.all(12.0),
             child: Row(
               children: [
                 Expanded(
                   child: TextFormField(
+                    controller: _startDateController,
                     readOnly: true,
                     decoration: InputDecoration(
                       labelText: "Start Date",
@@ -168,16 +185,13 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
                           borderRadius: BorderRadius.circular(10)),
                       suffixIcon: const Icon(Icons.calendar_today),
                     ),
-                    controller: TextEditingController(
-                        text: _startDate != null
-                            ? DateFormat("dd MMM yyyy").format(_startDate!)
-                            : ""),
                     onTap: _selectStartDate,
                   ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: TextFormField(
+                    controller: _endDateController,
                     readOnly: true,
                     decoration: InputDecoration(
                       labelText: "End Date",
@@ -185,26 +199,20 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
                           borderRadius: BorderRadius.circular(10)),
                       suffixIcon: const Icon(Icons.calendar_today),
                     ),
-                    controller: TextEditingController(
-                        text: _endDate != null
-                            ? DateFormat("dd MMM yyyy").format(_endDate!)
-                            : ""),
                     onTap: _selectEndDate,
                   ),
                 ),
               ],
             ),
           ),
-
           Expanded(
-            child: _startDate == null || _endDate == null
+            child: (_startDate == null || _endDate == null)
                 ? const Center(
                     child: Text("Select start and end date to view attendance"))
                 : FutureBuilder<Map<DateTime, Map<String, dynamic>>>(
                     future: _fetchAttendance(),
                     builder: (context, snapshot) {
-                      if (snapshot.connectionState ==
-                          ConnectionState.waiting) {
+                      if (snapshot.connectionState == ConnectionState.waiting) {
                         return const Center(child: CircularProgressIndicator());
                       }
 
@@ -213,19 +221,18 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
                       }
 
                       final data = snapshot.data ?? {};
-                      if (data.isEmpty) {
-                        return const Center(child: Text("No attendance found"));
-                      }
-
-                      int present = 0, absent = 0, partial = 0, weekOff = 0;
-                      double totalPeriodHours = 0;
-                      double totalPeriodOT = 0;
-
                       List<DateTime> allDates = [];
                       for (DateTime date = _startDate!;
                           !date.isAfter(_endDate!);
                           date = date.add(const Duration(days: 1))) {
                         allDates.add(date);
+                      }
+
+                      int present = 0, absent = 0, partial = 0, weekOff = 0, workedWeekOff = 0;
+                      double totalPeriodHours = 0;
+                      double totalPeriodOT = 0;
+
+                      for (var date in allDates) {
                         final record = data[date];
 
                         DateTime? punchInTime = record?["in"] as DateTime?;
@@ -234,24 +241,22 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
                         double totalHours = 0;
                         double otHours = 0;
 
-                        if (punchInTime != null && punchOutTime != null) {
-                          totalHours =
-                              punchOutTime.difference(punchInTime).inMinutes /
-                                  60.0;
-                          otHours = totalHours > 12 ? totalHours - 12 : 0;
+                        bool isWeekOff = record?["type"] == "week_off" || date.weekday == DateTime.sunday;
+                        bool hasPunch = punchInTime != null || punchOutTime != null;
 
+                        if (punchInTime != null && punchOutTime != null) {
+                          totalHours = punchOutTime.difference(punchInTime).inMinutes / 60.0;
+                          otHours = totalHours > 12 ? totalHours - 12 : 0;
                           totalPeriodHours += totalHours;
                           totalPeriodOT += otHours;
                         }
 
-                        if (record != null && record["type"] == "week_off") {
+                        if (isWeekOff && hasPunch) {
+                          workedWeekOff++;
+                        } else if (isWeekOff) {
                           weekOff++;
-                        } else if (record == null) {
-                          if (date.weekday == DateTime.sunday) {
-                            weekOff++;
-                          } else {
-                            absent++;
-                          }
+                        } else if (!hasPunch) {
+                          absent++;
                         } else if (punchInTime != null && punchOutTime != null) {
                           present++;
                         } else {
@@ -259,175 +264,164 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
                         }
                       }
 
-                      return Column(
-                        children: [
-                          Padding(
-                            padding: const EdgeInsets.all(8),
-                            child: Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
-                              children: [
-                                _buildSummaryCard(
-                                    "Total Days",
-                                    allDates.length,
-                                    Colors.indigo,
-                                    Icons.calendar_today,
-                                    isTablet),
-                                _buildSummaryCard(
-                                    "Present", present, Colors.green, Icons.check_circle, isTablet),
-                                _buildSummaryCard(
-                                    "Partial", partial, Colors.orange, Icons.timelapse, isTablet),
-                                _buildSummaryCard(
-                                    "Absent", absent, Colors.red, Icons.cancel, isTablet),
-                                _buildSummaryCard(
-                                    "Week Off", weekOff, Colors.grey, Icons.beach_access, isTablet),
-                                _buildSummaryCard(
-                                    "Total Hrs", 0, Colors.blue, Icons.access_time, isTablet,
-                                    hours: totalPeriodHours),
-                                _buildSummaryCard(
-                                    "OT Hrs", 0, Colors.deepPurple, Icons.timelapse, isTablet,
-                                    hours: totalPeriodOT),
-                              ],
-                            ),
-                          ),
+                      return SingleChildScrollView(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              SingleChildScrollView(
+                                scrollDirection: Axis.horizontal,
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                child: Row(
+                                  children: [
+                                    _buildSummaryCard("Total Days", allDates.length,
+                                        Colors.indigo, Icons.calendar_today, isTablet),
+                                    _buildSummaryCard("Present", present, Colors.green,
+                                        Icons.check_circle, isTablet),
+                                    _buildSummaryCard("Partial", partial, Colors.orange,
+                                        Icons.timelapse, isTablet),
+                                    _buildSummaryCard("Absent", absent, Colors.red,
+                                        Icons.cancel, isTablet),
+                                    _buildSummaryCard("Week Off", weekOff, Colors.grey,
+                                        Icons.beach_access, isTablet),
+                                    _buildSummaryCard("Worked on WeekOff", workedWeekOff,
+                                        Colors.blue, Icons.work, isTablet),
+                                    _buildSummaryCard("Total Hrs", 0, Colors.blueAccent,
+                                        Icons.access_time, isTablet, hours: totalPeriodHours),
+                                    _buildSummaryCard("OT Hrs", 0, Colors.deepPurple,
+                                        Icons.timelapse, isTablet, hours: totalPeriodOT),
+                                  ],
+                                ),
+                              ),
+                              ListView.builder(
+                                shrinkWrap: true,
+                                physics: const NeverScrollableScrollPhysics(),
+                                itemCount: allDates.length,
+                                itemBuilder: (context, index) {
+                                  final date = allDates[index];
+                                  final record = data[date];
 
-                          Expanded(
-                            child: ListView.builder(
-                              itemCount: allDates.length,
-                              itemBuilder: (context, index) {
-                                final date = allDates[index];
-                                final record = data[date];
+                                  DateTime? punchInTime = record?["in"] as DateTime?;
+                                  DateTime? punchOutTime = record?["out"] as DateTime?;
 
-                                String punchIn = "-";
-                                String punchOut = "-";
-                                String punchInAddr = record?["inAddress"] ?? "";
-                                String punchOutAddr = record?["outAddress"] ?? "";
+                                  String punchIn = punchInTime != null
+                                      ? DateFormat("dd MMM yyyy hh:mm a").format(punchInTime)
+                                      : "-";
+                                  String punchOut = punchOutTime != null
+                                      ? DateFormat("dd MMM yyyy hh:mm a").format(punchOutTime)
+                                      : "-";
 
-                                DateTime? punchInTime = record?["in"] as DateTime?;
-                                DateTime? punchOutTime = record?["out"] as DateTime?;
+                                  String punchInAddr = record?["inAddress"] ?? "";
+                                  String punchOutAddr = record?["outAddress"] ?? "";
 
-                                double totalHours = 0;
-                                double otHours = 0;
+                                  double totalHours = 0;
+                                  double otHours = 0;
 
-                                if (punchInTime != null) {
-                                  punchIn = DateFormat("dd MMM yyyy hh:mm a")
-                                      .format(punchInTime);
-                                }
-                                if (punchOutTime != null) {
-                                  punchOut = DateFormat("dd MMM yyyy hh:mm a")
-                                      .format(punchOutTime);
-                                }
+                                  if (punchInTime != null && punchOutTime != null) {
+                                    totalHours =
+                                        punchOutTime.difference(punchInTime).inMinutes / 60.0;
+                                    otHours = totalHours > 12 ? totalHours - 12 : 0;
+                                  }
 
-                                if (punchInTime != null && punchOutTime != null) {
-                                  totalHours =
-                                      punchOutTime.difference(punchInTime).inMinutes / 60.0;
-                                  otHours = totalHours > 12 ? totalHours - 12 : 0;
-                                }
+                                  bool isWeekOff = record?["type"] == "week_off" || date.weekday == DateTime.sunday;
+                                  bool hasPunch = punchInTime != null || punchOutTime != null;
 
-                                Color statusColor;
-                                IconData statusIcon;
-                                String statusText;
+                                  Color statusColor;
+                                  IconData statusIcon;
+                                  String statusText;
 
-                                if (record != null && record["type"] == "week_off") {
-                                  statusColor = Colors.grey.shade700;
-                                  statusIcon = Icons.beach_access;
-                                  statusText = "Week Off";
-                                } else if (record == null && date.weekday == DateTime.sunday) {
-                                  statusColor = Colors.grey.shade700;
-                                  statusIcon = Icons.beach_access;
-                                  statusText = "Week Off";
-                                } else if (record == null) {
-                                  statusColor = Colors.red;
-                                  statusIcon = Icons.close;
-                                  statusText = "Absent";
-                                } else if (punchInTime != null && punchOutTime != null) {
-                                  statusColor = Colors.green;
-                                  statusIcon = Icons.check_circle;
-                                  statusText = "Present";
-                                } else {
-                                  statusColor = Colors.orange;
-                                  statusIcon = Icons.timelapse;
-                                  statusText = "Partial";
-                                }
+                                  if (isWeekOff && hasPunch) {
+                                    statusColor = Colors.blue;
+                                    statusIcon = Icons.work;
+                                    statusText = "Worked on Week Off";
+                                  } else if (isWeekOff) {
+                                    statusColor = Colors.grey.shade700;
+                                    statusIcon = Icons.beach_access;
+                                    statusText = "Week Off";
+                                  } else if (!hasPunch) {
+                                    statusColor = Colors.red;
+                                    statusIcon = Icons.close;
+                                    statusText = "Absent";
+                                  } else if (punchInTime != null && punchOutTime != null) {
+                                    statusColor = Colors.green;
+                                    statusIcon = Icons.check_circle;
+                                    statusText = "Present";
+                                  } else {
+                                    statusColor = Colors.orange;
+                                    statusIcon = Icons.timelapse;
+                                    statusText = "Partial";
+                                  }
 
-                                final isExpanded = _expandedDates[date] ?? false;
+                                  final isExpanded = _expandedDates[date] ?? false;
 
-                                return Card(
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(15),
-                                  ),
-                                  elevation: 5,
-                                  margin: const EdgeInsets.symmetric(
-                                      horizontal: 12, vertical: 6),
-                                  child: InkWell(
-                                    onTap: () {
-                                      setState(() {
-                                        _expandedDates[date] = !isExpanded;
-                                      });
-                                    },
-                                    child: Padding(
-                                      padding: const EdgeInsets.all(12.0),
-                                      child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          Row(
-                                            children: [
-                                              CircleAvatar(
-                                                radius: isTablet ? 26 : 22,
-                                                backgroundColor:
-                                                    statusColor.withOpacity(0.15),
-                                                child: Icon(statusIcon,
-                                                    color: statusColor,
-                                                    size: isTablet ? 26 : 22),
-                                              ),
-                                              const SizedBox(width: 12),
-                                              Expanded(
-                                                child: Text(
-                                                  DateFormat("dd MMM yyyy (EEE)")
-                                                      .format(date),
-                                                  style: TextStyle(
-                                                    fontWeight: FontWeight.bold,
-                                                    fontSize: isTablet ? 16 : 15,
-                                                    color: statusColor,
+                                  return Card(
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(15),
+                                    ),
+                                    elevation: 5,
+                                    margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                    child: InkWell(
+                                      onTap: () {
+                                        setState(() {
+                                          _expandedDates[date] = !isExpanded;
+                                        });
+                                      },
+                                      child: Padding(
+                                        padding: const EdgeInsets.all(12.0),
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Row(
+                                              children: [
+                                                CircleAvatar(
+                                                  radius: isTablet ? 26 : 22,
+                                                  backgroundColor: statusColor.withOpacity(0.15),
+                                                  child: Icon(statusIcon,
+                                                      color: statusColor,
+                                                      size: isTablet ? 26 : 22),
+                                                ),
+                                                const SizedBox(width: 12),
+                                                Expanded(
+                                                  child: Text(
+                                                    DateFormat("dd MMM yyyy (EEE)").format(date),
+                                                    style: TextStyle(
+                                                      fontWeight: FontWeight.bold,
+                                                      fontSize: isTablet ? 16 : 15,
+                                                      color: statusColor,
+                                                    ),
                                                   ),
                                                 ),
-                                              ),
-                                              Icon(
-                                                isExpanded
-                                                    ? Icons.keyboard_arrow_up
-                                                    : Icons.keyboard_arrow_down,
-                                                color: Colors.grey,
-                                              )
+                                                Icon(
+                                                  isExpanded
+                                                      ? Icons.keyboard_arrow_up
+                                                      : Icons.keyboard_arrow_down,
+                                                  color: Colors.grey,
+                                                )
+                                              ],
+                                            ),
+                                            const SizedBox(height: 8),
+                                            Text(statusText, style: TextStyle(color: statusColor)),
+                                            if (punchInTime != null) Text("Punch In: $punchIn"),
+                                            if (punchOutTime != null) Text("Punch Out: $punchOut"),
+                                            if (punchInTime != null && punchOutTime != null) ...[
+                                              Text("Total Hours: ${_formatHoursToHHMM(totalHours)}"),
+                                              Text("OT Hours: ${_formatHoursToHHMM(otHours)}"),
                                             ],
-                                          ),
-                                          const SizedBox(height: 8),
-                                          if (statusText == "Week Off")
-                                            Text("Week Off",
-                                                style: TextStyle(
-                                                    color: Colors.grey[700]))
-                                          else ...[
-                                            Text("Punch In: $punchIn"),
-                                            Text("Punch Out: $punchOut"),
-                                            Text(
-                                                "Total Hours: ${_formatHoursToHHMM(totalHours)}"),
-                                            Text(
-                                                "OT Hours: ${_formatHoursToHHMM(otHours)}"),
                                             if (isExpanded) ...[
-                                              if (punchInAddr.isNotEmpty)
-                                                Text("Punch In Location: $punchInAddr"),
-                                              if (punchOutAddr.isNotEmpty)
-                                                Text("Punch Out Location: $punchOutAddr"),
+                                              if (punchInAddr.isNotEmpty) Text("Punch In Location: $punchInAddr"),
+                                              if (punchOutAddr.isNotEmpty) Text("Punch Out Location: $punchOutAddr"),
                                             ]
-                                          ]
-                                        ],
+                                          ],
+                                        ),
                                       ),
                                     ),
-                                  ),
-                                );
-                              },
-                            ),
+                                  );
+                                },
+                              ),
+                            ],
                           ),
-                        ],
+                        ),
                       );
                     },
                   ),
@@ -437,8 +431,7 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
     );
   }
 
-  Widget _buildSummaryCard(String title, int count, Color color,
-      IconData icon, bool isTablet,
+  Widget _buildSummaryCard(String title, int count, Color color, IconData icon, bool isTablet,
       {double? hours}) {
     String displayText = hours != null ? _formatHoursToHHMM(hours) : count.toString();
     return Card(
@@ -446,7 +439,7 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
       elevation: 4,
       margin: const EdgeInsets.symmetric(horizontal: 6),
       child: Container(
-        width: isTablet ? 120 : 100,
+        width: isTablet ? 140 : 115,
         padding: EdgeInsets.all(isTablet ? 14 : 10),
         decoration: BoxDecoration(
           gradient: LinearGradient(

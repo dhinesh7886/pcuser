@@ -25,11 +25,13 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   String? subDivision;
   bool _loadingUser = true;
   String? todayHolidayName;
+  String? nextPunchType; // punch_in, punch_out, or null if completed
 
   @override
   void initState() {
     super.initState();
     _loadUserDetails();
+    _determineNextPunchType();
   }
 
   Future<void> _loadUserDetails() async {
@@ -50,6 +52,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       }
 
       await _checkAndCreateHoliday();
+      await _determineNextPunchType();
     } catch (e) {
       empName = "Error loading user";
     } finally {
@@ -61,7 +64,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       DateTime(date.year, date.month, date.day);
 
   DateTime _endOfDay(DateTime date) =>
-      DateTime(date.year, date.month, date.day).add(const Duration(days: 1));
+      DateTime(date.year, date.month, date.day, 23, 59, 59);
 
   Stream<QuerySnapshot> _todayRecordsStream() {
     final now = DateTime.now();
@@ -71,15 +74,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         .collection('records')
         .where('timestamp', isGreaterThanOrEqualTo: _startOfDay(now))
         .where('timestamp', isLessThan: _endOfDay(now))
-        .orderBy('timestamp')
-        .snapshots();
-  }
-
-  Stream<QuerySnapshot> _allRecordsStream() {
-    return FirebaseFirestore.instance
-        .collection('attendance')
-        .doc(widget.userId)
-        .collection('records')
         .orderBy('timestamp')
         .snapshots();
   }
@@ -139,8 +133,59 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
+  Future<void> _determineNextPunchType() async {
+    final now = DateTime.now();
+    final recordRef = FirebaseFirestore.instance
+        .collection('attendance')
+        .doc(widget.userId)
+        .collection('records');
+
+    final lastRecordSnapshot =
+        await recordRef.orderBy('timestamp', descending: true).limit(1).get();
+    final lastRecord =
+        lastRecordSnapshot.docs.isNotEmpty ? lastRecordSnapshot.docs.first : null;
+
+    String? nextType;
+
+    if (lastRecord == null) {
+      nextType = 'punch_in';
+    } else {
+      final lastType = lastRecord['type'];
+      final lastTime = (lastRecord['timestamp'] as Timestamp).toDate();
+
+      final fiveAMNextDay = DateTime(
+          lastTime.year, lastTime.month, lastTime.day + 1, 5, 0, 0);
+
+      if (lastType == 'punch_in' && now.isBefore(fiveAMNextDay)) {
+        nextType = 'punch_out';
+      } else {
+        final todayKey = DateFormat('ddMMyyyy').format(_startOfDay(now));
+        final todayRecords = await recordRef
+            .where('dateKey', isEqualTo: todayKey)
+            .where('type', whereIn: ['punch_in', 'punch_out'])
+            .get();
+
+        final hasPunchIn =
+            todayRecords.docs.any((d) => d['type'] == 'punch_in');
+        final hasPunchOut =
+            todayRecords.docs.any((d) => d['type'] == 'punch_out');
+
+        if (!hasPunchIn) {
+          nextType = 'punch_in';
+        } else if (!hasPunchOut) {
+          nextType = 'punch_out';
+        } else {
+          nextType = null;
+        }
+      }
+    }
+
+    if (mounted) setState(() => nextPunchType = nextType);
+  }
+
   Future<void> _markAttendance() async {
-    if (saving) return;
+    if (saving || nextPunchType == null) return;
+
     setState(() {
       saving = true;
       status = "Marking attendance...";
@@ -178,40 +223,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
       final now = DateTime.now();
       DateTime adjustedDate = now;
-      if (now.hour < 5) {
+      if (nextPunchType == 'punch_out' && now.hour < 5) {
         adjustedDate = now.subtract(const Duration(days: 1));
       }
 
       final dateKey = DateFormat('ddMMyyyy').format(adjustedDate);
-
-      final lastRecordSnapshot = await FirebaseFirestore.instance
-          .collection('attendance')
-          .doc(widget.userId)
-          .collection('records')
-          .orderBy('timestamp', descending: true)
-          .limit(1)
-          .get();
-
-      final lastRecord =
-          lastRecordSnapshot.docs.isNotEmpty ? lastRecordSnapshot.docs.first : null;
-
-      String type;
-
-      // NIGHT SHIFT LOGIC
-      if (lastRecord != null && lastRecord['type'] == 'punch_in') {
-        final lastPunchTime = (lastRecord['timestamp'] as Timestamp).toDate();
-        final fiveAMToday = DateTime(lastPunchTime.year,
-            lastPunchTime.month, lastPunchTime.day + 1, 5, 0, 0);
-        if (now.isBefore(fiveAMToday)) {
-          type = 'punch_out'; // Allow punch out for previous day
-        } else {
-          type = 'punch_in'; // After 5AM, treat as new day punch in
-        }
-      } else {
-        type = (lastRecord != null && lastRecord['type'] == 'punch_out')
-            ? 'punch_in'
-            : 'punch_in';
-      }
 
       Position? pos;
       try {
@@ -260,7 +276,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         'lat': pos.latitude,
         'lng': pos.longitude,
         'address': address,
-        'type': type,
+        'type': nextPunchType,
         'dateKey': dateKey,
         'holidayName': todayHolidayName,
       });
@@ -268,9 +284,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       if (mounted) {
         setState(() {
           status =
-              "${type == 'punch_in' ? "Punch In" : "Punch Out"} saved at ${DateFormat('HH:mm').format(now)}\n$address";
-          showRetry = false;
+              "${nextPunchType == 'punch_in' ? "Punch In" : "Punch Out"} saved at ${DateFormat('HH:mm').format(now)}\n$address";
         });
+        await _determineNextPunchType();
       }
     } catch (e) {
       setState(() {
@@ -336,16 +352,13 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
         final docs = snapshot.data!.docs;
 
-        return SingleChildScrollView(
-          child: Column(
-            children: docs.map((doc) {
-              final data = doc.data() as Map<String, dynamic>;
-              final type = data['type'];
-              if (type == 'holiday') return _buildHolidayCard(doc);
-              return _buildRecordCard(
-                  doc, type == 'punch_in' ? true : false);
-            }).toList(),
-          ),
+        return Column(
+          children: docs.map((doc) {
+            final data = doc.data() as Map<String, dynamic>;
+            final type = data['type'];
+            if (type == 'holiday') return _buildHolidayCard(doc);
+            return _buildRecordCard(doc, type == 'punch_in');
+          }).toList(),
         );
       },
     );
@@ -429,7 +442,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final title = _loadingUser ? "Loading..." : (empName ?? widget.userId);
+    final title = _loadingUser
+        ? "Loading..."
+        : "${empName ?? widget.userId} - ${widget.userId}";
 
     return Scaffold(
       appBar: AppBar(
@@ -447,100 +462,77 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         ),
         child: SafeArea(
           child: SingleChildScrollView(
-            child: Padding(
-              padding: const EdgeInsets.all(12.0),
-              child: Column(
-                children: [
-                  _buildStatusCard(),
-                  const SizedBox(height: 12),
-                  const Divider(color: Colors.white70, thickness: 1),
-                  const Text(
-                    "Today's Records",
-                    style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white),
-                  ),
-                  SizedBox(
-                      height: MediaQuery.of(context).size.height * 0.45,
-                      child: _buildRecordsList()),
-                  _fullWidthButton(
-                      icon: Icons.request_page,
-                      label: "Permission Request",
-                      color: Colors.orange,
-                      onTap: () {
-                        Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (context) => PermissionRequestScreen(
-                                    userId: widget.userId)));
-                      }),
-                  _fullWidthButton(
-                      icon: Icons.leave_bags_at_home,
-                      label: "Leave Request",
-                      color: Colors.blue,
-                      onTap: () {
-                        Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (context) =>
-                                    LeaveRequestScreen(userId: widget.userId)));
-                      }),
-                  _fullWidthButton(
-                      icon: Icons.data_usage,
-                      label: "Attendance Data",
-                      color: Colors.green,
-                      onTap: () {
-                        Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (context) =>
-                                    AttendanceDataScreen(userId: widget.userId)));
-                      }),
-                  const SizedBox(height: 20),
-                ],
-              ),
+            padding: const EdgeInsets.all(12.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _buildStatusCard(),
+                const SizedBox(height: 12),
+                const Divider(color: Colors.white70, thickness: 1),
+                const Text(
+                  "Today's Records",
+                  style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white),
+                ),
+                const SizedBox(height: 8),
+                _buildRecordsList(),
+                const SizedBox(height: 12),
+                _fullWidthButton(
+                    icon: Icons.request_page,
+                    label: "Permission Request",
+                    color: Colors.orange,
+                    onTap: () {
+                      Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (context) =>
+                                  PermissionRequestScreen(userId: widget.userId)));
+                    }),
+                _fullWidthButton(
+                    icon: Icons.leave_bags_at_home,
+                    label: "Leave Request",
+                    color: Colors.blue,
+                    onTap: () {
+                      Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (context) =>
+                                  LeaveRequestScreen(userId: widget.userId)));
+                    }),
+                _fullWidthButton(
+                    icon: Icons.data_usage,
+                    label: "Attendance Data",
+                    color: Colors.green,
+                    onTap: () {
+                      Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (context) =>
+                                  AttendanceDataScreen(userId: widget.userId)));
+                    }),
+                const SizedBox(height: 20),
+              ],
             ),
           ),
         ),
       ),
-      floatingActionButton: StreamBuilder<QuerySnapshot>(
-        stream: _allRecordsStream(),
-        builder: (context, snapshot) {
-          final docs = snapshot.data?.docs ?? [];
-          QueryDocumentSnapshot? lastPunch;
-          try {
-            lastPunch = docs.lastWhere(
-              (d) => d['type'] == 'punch_in' || d['type'] == 'punch_out',
-            );
-          } catch (e) {
-            lastPunch = null;
-          }
-
-          String label;
-          if (lastPunch != null && lastPunch['type'] == 'punch_in') {
-            final lastPunchTime =
-                (lastPunch['timestamp'] as Timestamp).toDate();
-            final fiveAMToday = DateTime(lastPunchTime.year,
-                lastPunchTime.month, lastPunchTime.day + 1, 5, 0, 0);
-            if (DateTime.now().isBefore(fiveAMToday)) {
-              label = "Punch Out";
-            } else {
-              label = "Punch In";
-            }
-          } else {
-            label = (lastPunch == null || lastPunch['type'] == 'punch_out')
-                ? "Punch In"
-                : "Punch Out";
-          }
-
-          return FloatingActionButton.extended(
-            onPressed: saving ? null : _markAttendance,
-            icon: const Icon(Icons.fingerprint),
-            label: Text(label),
-            backgroundColor: const Color.fromARGB(255, 240, 217, 87),
-          );
-        },
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed:
+            (nextPunchType == null || saving) ? null : _markAttendance,
+        icon: const Icon(Icons.fingerprint),
+        label: Text(
+          nextPunchType == null
+              ? "Attendance Completed"
+              : nextPunchType == 'punch_in'
+                  ? "Punch In"
+                  : "Punch Out",
+          style: const TextStyle(fontSize: 15),
+        ),
+        backgroundColor: nextPunchType == null
+            ? const Color.fromARGB(255, 248, 195, 195)
+            : const Color.fromARGB(255, 240, 217, 87),
       ),
     );
   }
