@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:pcuser/user_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:pcuser/home.dart';
+import 'package:pcuser/attendance.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
@@ -67,10 +68,8 @@ class _StylishLoginPageState extends State<StylishLoginPage> {
         final data = docSnapshot.data();
         setState(() {
           firestoreName = data!['name'];
-          // firestoreDob = data['dob']; // DDMMYYYY format
           var p = data['dob'].split("/");
-          print(p);
-          firestoreDob = p[0]+ p[1];
+          firestoreDob = p[0] + p[1]; // Combine DD and MM
           passwordHint = _generatePasswordHint(firestoreName!, firestoreDob!);
         });
       } else {
@@ -203,7 +202,9 @@ class _StylishLoginPageState extends State<StylishLoginPage> {
                         prefixIcon: const Icon(Icons.key),
                         suffixIcon: IconButton(
                           icon: Icon(
-                            passwordVisible ? Icons.visibility : Icons.visibility_off,
+                            passwordVisible
+                                ? Icons.visibility
+                                : Icons.visibility_off,
                           ),
                           onPressed: () {
                             setState(() {
@@ -254,7 +255,7 @@ class _StylishLoginPageState extends State<StylishLoginPage> {
                                 ),
                               ),
                               child: userProvider.isSendingOtp
-                                  ? SizedBox(
+                                  ? const SizedBox(
                                       width: 20,
                                       height: 20,
                                       child: CircularProgressIndicator(
@@ -273,15 +274,16 @@ class _StylishLoginPageState extends State<StylishLoginPage> {
                           height: buttonHeight,
                           child: ElevatedButton(
                             onPressed: () async {
-                              String enteredPassword = passwordController.text.trim();
+                              String enteredPassword =
+                                  passwordController.text.trim();
                               String enteredOtp = otpController.text.trim();
                               bool success = false;
 
                               if (firestoreName != null &&
                                   firestoreDob != null &&
                                   enteredPassword.isNotEmpty) {
-                                String generatedPwd =
-                                    generatePassword(firestoreName!, firestoreDob!);
+                                String generatedPwd = generatePassword(
+                                    firestoreName!, firestoreDob!);
                                 if (enteredPassword == generatedPwd) {
                                   success = true;
                                 }
@@ -305,7 +307,8 @@ class _StylishLoginPageState extends State<StylishLoginPage> {
                                   Navigator.pushReplacement(
                                     context,
                                     MaterialPageRoute(
-                                      builder: (context) => const UsersHomePage(),
+                                      builder: (context) => AttendanceScreen(
+                                          userId: empIdController.text.trim()),
                                     ),
                                   );
                                 }
@@ -362,7 +365,7 @@ class _StylishLoginPageState extends State<StylishLoginPage> {
                           ),
                         ),
                       ],
-                    )
+                    ),
                   ],
                 ),
               ),

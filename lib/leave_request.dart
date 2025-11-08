@@ -32,11 +32,9 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
   @override
   void initState() {
     super.initState();
-    _animationController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 6),
-    )..repeat(reverse: true);
-
+    _animationController =
+        AnimationController(vsync: this, duration: const Duration(seconds: 6))
+          ..repeat(reverse: true);
     _fetchUserDetails();
   }
 
@@ -47,7 +45,7 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
     super.dispose();
   }
 
-  /// ✅ Fetch user details from Firestore using userId
+  /// Fetch user details
   Future<void> _fetchUserDetails() async {
     try {
       final userDoc = await FirebaseFirestore.instance
@@ -65,7 +63,6 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
           _subDivision = data['subDivision'] ?? '';
         });
 
-        // Store details in SharedPreferences for later use
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString("name", _userName ?? '');
         await prefs.setString("companyName", _companyName ?? '');
@@ -86,29 +83,49 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
     final today = DateTime.now();
     final picked = await showDatePicker(
       context: context,
-      initialDate: today,
+      initialDate: _startDate ?? today,
       firstDate: today,
       lastDate: DateTime(today.year + 1),
     );
-    if (picked != null) setState(() => _startDate = picked);
+    if (picked != null) {
+      setState(() {
+        _startDate = picked;
+        if (_endDate != null && _endDate!.isBefore(_startDate!)) {
+          _endDate = null;
+        }
+      });
+    }
   }
 
   Future<void> _pickEndDate() async {
     final today = DateTime.now();
+    if (_startDate == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Please select start date first")),
+      );
+      return;
+    }
     final picked = await showDatePicker(
       context: context,
-      initialDate: _startDate ?? today,
-      firstDate: _startDate ?? today,
+      initialDate: _endDate ?? _startDate!,
+      firstDate: _startDate!,
       lastDate: DateTime(today.year + 1),
     );
     if (picked != null) setState(() => _endDate = picked);
   }
 
-  /// ✅ Submit leave request and store full user details in Firestore
+  /// Submit leave request
   Future<void> _submitRequest() async {
     if (!_formKey.currentState!.validate() ||
         _startDate == null ||
         _endDate == null) return;
+
+    if (_endDate!.isBefore(_startDate!)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("End date cannot be before start date")),
+      );
+      return;
+    }
 
     setState(() => _submitting = true);
 
@@ -130,14 +147,12 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
       if (overlap) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-              content:
-                  Text("Leave request overlaps with an existing request")),
+              content: Text("Leave request overlaps with existing request")),
         );
         setState(() => _submitting = false);
         return;
       }
 
-      // Add leave request with all user details
       await userRef.collection("leave_requests").add({
         "startDate": Timestamp.fromDate(_startDate!),
         "endDate": Timestamp.fromDate(_endDate!),
@@ -170,36 +185,39 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
     }
   }
 
-  /// ✅ Stream only current + upcoming month leaves
+  /// ✅ Show only current & upcoming leave requests
   Stream<QuerySnapshot> _leaveRequestsStream() {
-    final now = DateTime.now();
-    final startOfCurrentMonth = DateTime(now.year, now.month, 1);
-    final startOfNextMonth =
-        DateTime(now.year, now.month + 2, 1); // include next month
+    final today = DateTime.now();
+    final todayStart = DateTime(today.year, today.month, today.day);
 
     return FirebaseFirestore.instance
         .collection("Users")
         .doc(widget.userId)
         .collection("leave_requests")
-        .where("startDate",
-            isGreaterThanOrEqualTo: Timestamp.fromDate(startOfCurrentMonth))
-        .where("startDate", isLessThan: Timestamp.fromDate(startOfNextMonth))
-        .orderBy("startDate", descending: false)
+        .where("endDate", isGreaterThanOrEqualTo: Timestamp.fromDate(todayStart))
+        .orderBy("endDate", descending: false)
         .snapshots();
   }
 
-  Widget _buildRequestList() {
+  Widget _buildRequestList(double width) {
     return StreamBuilder<QuerySnapshot>(
       stream: _leaveRequestsStream(),
       builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return const Center(
+              child: Text("Error loading leave requests",
+                  style: TextStyle(color: Colors.white70)));
+        }
+
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());
         }
+
         if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
           return const Padding(
             padding: EdgeInsets.all(16.0),
             child: Text(
-              "No leave requests for current or upcoming month",
+              "No current or upcoming leave requests",
               style: TextStyle(fontSize: 14, color: Colors.white70),
             ),
           );
@@ -227,51 +245,62 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
               statusColor = Colors.orange;
             }
 
-            return Card(
-              margin:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20)),
-              elevation: 8,
-              shadowColor: Colors.black45,
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
+            return Center(
+              child: ConstrainedBox(
+                constraints:
+                    BoxConstraints(maxWidth: width < 600 ? width * 0.9 : 600),
+                child: Card(
+                  margin: const EdgeInsets.symmetric(vertical: 8),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(20)),
+                  elevation: 8,
+                  shadowColor: Colors.black45,
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        CircleAvatar(
-                          backgroundColor: statusColor.withOpacity(0.2),
-                          child: Icon(Icons.pending_actions,
-                              color: statusColor),
+                        Row(
+                          children: [
+                            CircleAvatar(
+                              backgroundColor: statusColor.withOpacity(0.2),
+                              child: Icon(Icons.pending_actions,
+                                  color: statusColor),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                "${DateFormat("dd MMM yyyy").format(startDate)} - ${DateFormat("dd MMM yyyy").format(endDate)}",
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: width < 600 ? 15 : 17,
+                                ),
+                              ),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 4),
+                              decoration: BoxDecoration(
+                                  color: statusColor.withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(12)),
+                              child: Text(
+                                status,
+                                style: TextStyle(
+                                    color: statusColor,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: width < 600 ? 12 : 14),
+                              ),
+                            )
+                          ],
                         ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            "${DateFormat("dd MMM yyyy").format(startDate)} - ${DateFormat("dd MMM yyyy").format(endDate)}",
-                            style: const TextStyle(
-                                fontWeight: FontWeight.bold, fontSize: 16),
-                          ),
-                        ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 4),
-                          decoration: BoxDecoration(
-                              color: statusColor.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(12)),
-                          child: Text(
-                            status,
+                        const SizedBox(height: 8),
+                        Text(reason,
                             style: TextStyle(
-                                color: statusColor,
-                                fontWeight: FontWeight.bold),
-                          ),
-                        )
+                                fontSize: width < 600 ? 13 : 15,
+                                color: Colors.black87)),
                       ],
                     ),
-                    const SizedBox(height: 8),
-                    Text(reason, style: const TextStyle(fontSize: 14)),
-                  ],
+                  ),
                 ),
               ),
             );
@@ -283,6 +312,9 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
 
   @override
   Widget build(BuildContext context) {
+    final width = MediaQuery.of(context).size.width;
+    final horizontalPadding = width < 600 ? 16.0 : width * 0.2;
+
     return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: AppBar(
@@ -326,12 +358,12 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
           ),
           SafeArea(
             child: SingleChildScrollView(
-              child: Column(
-                children: [
-                  const SizedBox(height: 16),
-                  Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Card(
+              child: Padding(
+                padding: EdgeInsets.symmetric(
+                    horizontal: horizontalPadding, vertical: 16),
+                child: Column(
+                  children: [
+                    Card(
                       shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(20)),
                       elevation: 12,
@@ -385,6 +417,9 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
                                     validator: (value) {
                                       if (_endDate == null) {
                                         return "Please select end date";
+                                      } else if (_startDate != null &&
+                                          _endDate!.isBefore(_startDate!)) {
+                                        return "End date cannot be before start date";
                                       }
                                       return null;
                                     },
@@ -412,13 +447,14 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
                               SizedBox(
                                 width: double.infinity,
                                 child: ElevatedButton.icon(
-                                  onPressed: _submitting
-                                      ? null
-                                      : _submitRequest,
+                                  onPressed:
+                                      _submitting ? null : _submitRequest,
                                   icon: const Icon(Icons.send),
-                                  label: Text(_submitting
-                                      ? "Submitting..."
-                                      : "Submit Request"),
+                                  label: Text(
+                                    _submitting
+                                        ? "Submitting..."
+                                        : "Submit Request",
+                                  ),
                                   style: ElevatedButton.styleFrom(
                                     padding: const EdgeInsets.symmetric(
                                         vertical: 14),
@@ -433,11 +469,11 @@ class _LeaveRequestScreenState extends State<LeaveRequestScreen>
                         ),
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 16),
-                  _buildRequestList(),
-                  const SizedBox(height: 50),
-                ],
+                    const SizedBox(height: 20),
+                    _buildRequestList(width),
+                    const SizedBox(height: 50),
+                  ],
+                ),
               ),
             ),
           ),

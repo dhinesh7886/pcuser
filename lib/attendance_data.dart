@@ -13,6 +13,8 @@ class AttendanceDataScreen extends StatefulWidget {
 
 class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
   String? _empName;
+  String? _companyName;
+  String? _subDivision;
   bool _loading = true;
 
   DateTime? _startDate;
@@ -26,7 +28,7 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
   @override
   void initState() {
     super.initState();
-    _loadUserName();
+    _loadUserNameAndOrg();
   }
 
   @override
@@ -36,7 +38,7 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
     super.dispose();
   }
 
-  Future<void> _loadUserName() async {
+  Future<void> _loadUserNameAndOrg() async {
     try {
       final snapshot = await FirebaseFirestore.instance
           .collection('Users')
@@ -45,7 +47,10 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
           .get();
 
       if (snapshot.docs.isNotEmpty) {
-        _empName = snapshot.docs.first['name'] ?? widget.userId;
+        final doc = snapshot.docs.first;
+        _empName = doc['name'] ?? widget.userId;
+        _companyName = doc['companyName'];
+        _subDivision = doc['subDivision'];
       } else {
         _empName = widget.userId;
       }
@@ -57,6 +62,7 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
     }
   }
 
+  /// Modified fetch: group late-night timestamps (hour < 5) to previous day
   Future<Map<DateTime, Map<String, dynamic>>> _fetchAttendance() async {
     if (_startDate == null || _endDate == null) return {};
 
@@ -65,6 +71,9 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
     DateTime end =
         DateTime(_endDate!.year, _endDate!.month, _endDate!.day, 23, 59, 59);
 
+    final Map<DateTime, Map<String, dynamic>> data = {};
+
+    // 1) Fetch attendance records
     final snapshot = await FirebaseFirestore.instance
         .collection("attendance")
         .doc(widget.userId)
@@ -74,35 +83,130 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
         .orderBy("timestamp")
         .get();
 
-    Map<DateTime, Map<String, dynamic>> data = {};
-
     for (var doc in snapshot.docs) {
       final map = doc.data();
       final ts = (map["timestamp"] as Timestamp?)?.toDate();
       if (ts == null) continue;
 
-      final dateKey = DateTime(ts.year, ts.month, ts.day);
-      final type = map["type"];
-      final address = (map["address"] ?? "Unknown").toString();
-
-      if (!data.containsKey(dateKey)) {
-        data[dateKey] = {
-          "in": null,
-          "out": null,
-          "inAddress": null,
-          "outAddress": null,
-          "type": null,
-        };
+      // --- NEW: compute workingDate (if time < 05:00 treat as previous day) ---
+      DateTime workingDateCandidate =
+          DateTime(ts.year, ts.month, ts.day); // by timestamp date
+      DateTime workingDate;
+      if (ts.hour < 5) {
+        // assign to previous day
+        final prev = workingDateCandidate.subtract(const Duration(days: 1));
+        workingDate = DateTime(prev.year, prev.month, prev.day);
+      } else {
+        workingDate = DateTime(workingDateCandidate.year, workingDateCandidate.month,
+            workingDateCandidate.day);
       }
+      // -----------------------------------------------------------------------
 
+      final type = map["type"];
+      final address = (map["address"] ?? "").toString();
+
+      data.putIfAbsent(workingDate, () => {
+            "in": null,
+            "out": null,
+            "inAddress": null,
+            "outAddress": null,
+            "type": null,
+            "holidayName": null,
+          });
+
+      // Note: we keep the actual timestamps as stored; grouping is done by workingDate.
       if (type == "punch_in") {
-        data[dateKey]!["in"] = ts;
-        data[dateKey]!["inAddress"] = address;
+        // If multiple punch_ins occur, keep the earliest for that workingDate (if desired)
+        final existingIn = data[workingDate]!["in"] as DateTime?;
+        if (existingIn == null || ts.isBefore(existingIn)) {
+          data[workingDate]!["in"] = ts;
+          data[workingDate]!["inAddress"] = address;
+        }
       } else if (type == "punch_out") {
-        data[dateKey]!["out"] = ts;
-        data[dateKey]!["outAddress"] = address;
+        // Keep latest punch_out for that workingDate
+        final existingOut = data[workingDate]!["out"] as DateTime?;
+        if (existingOut == null || ts.isAfter(existingOut)) {
+          data[workingDate]!["out"] = ts;
+          data[workingDate]!["outAddress"] = address;
+        }
       } else if (type == "week_off" || type == "holiday") {
-        data[dateKey]!["type"] = type;
+        data[workingDate]!["type"] = type;
+      }
+    }
+
+    // 2) Fetch holidays from Firestore
+    final holidaySnap = await FirebaseFirestore.instance
+        .collection("holidays")
+        .where("date", isGreaterThanOrEqualTo: Timestamp.fromDate(start))
+        .where("date", isLessThanOrEqualTo: Timestamp.fromDate(end))
+        .get();
+
+    for (var doc in holidaySnap.docs) {
+      final hData = doc.data();
+      final hDate = (hData["date"] as Timestamp?)?.toDate();
+      if (hDate == null) continue;
+      final dateKey = DateTime(hDate.year, hDate.month, hDate.day);
+      data.putIfAbsent(dateKey, () => {
+            "in": null,
+            "out": null,
+            "inAddress": null,
+            "outAddress": null,
+            "type": null,
+            "holidayName": null,
+          });
+      data[dateKey]!["type"] = "holiday";
+      data[dateKey]!["holidayName"] = hData["name"] ?? "Holiday";
+    }
+
+    // 3) Local holidayMap
+    final localHolidayMap = {
+      'AYCA PC|Corporate': {
+        '20102025': 'Deepavali',
+        '30102025': 'Month End',
+        '25122025': 'Christmas',
+      },
+      'AYCA PC|Isuzu': {
+        '20102025': 'Diwali',
+        '21102025': 'Additional Holiday for Diwali',
+        '25122025': 'Christmas',
+      },
+    };
+
+    if (_companyName != null && _subDivision != null) {
+      final key = '$_companyName|$_subDivision';
+      final companyHolidays = localHolidayMap[key];
+      if (companyHolidays != null && companyHolidays.isNotEmpty) {
+        companyHolidays.forEach((dateStr, reason) {
+          try {
+            if (dateStr.length == 8) {
+              final dd = int.parse(dateStr.substring(0, 2));
+              final mm = int.parse(dateStr.substring(2, 4));
+              final yyyy = int.parse(dateStr.substring(4, 8));
+              final d = DateTime(yyyy, mm, dd);
+              if (!d.isBefore(start) && !d.isAfter(end)) {
+                final dateKey = DateTime(d.year, d.month, d.day);
+                data.putIfAbsent(dateKey, () => {
+                      "in": null,
+                      "out": null,
+                      "inAddress": null,
+                      "outAddress": null,
+                      "type": null,
+                      "holidayName": null,
+                    });
+                if (data[dateKey]!["holidayName"] == null ||
+                    (data[dateKey]!["holidayName"] as String).isEmpty) {
+                  data[dateKey]!["type"] = "holiday";
+                  data[dateKey]!["holidayName"] = reason;
+                } else {
+                  if ((data[dateKey]!["holidayName"] as String) != reason) {
+                    data[dateKey]!["holidayName"] =
+                        "${data[dateKey]!["holidayName"]} (${reason})";
+                  }
+                }
+              }
+            }
+          } catch (_) {}
+        });
       }
     }
 
@@ -148,6 +252,28 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
         _endDateController.text = DateFormat("dd MMM yyyy").format(picked);
         _expandedDates.clear();
       });
+    }
+  }
+
+  /// Helper to format punch times; if time.hour < 5 show 24+ style
+  String _displayTimeWith27Style(DateTime ts) {
+    if (ts.hour < 5) {
+      final hour = 24 + ts.hour;
+      final minute = ts.minute.toString().padLeft(2, '0');
+      return "$hour:$minute";
+    } else {
+      return DateFormat("dd MMM yyyy hh:mm a").format(ts);
+    }
+  }
+
+  /// Helper to format only HH:mm with 24+ style for night shifts
+  String _displayTimeHHmm(DateTime ts) {
+    if (ts.hour < 5) {
+      final hour = 24 + ts.hour;
+      final minute = ts.minute.toString().padLeft(2, '0');
+      return "$hour:$minute";
+    } else {
+      return DateFormat("HH:mm").format(ts);
     }
   }
 
@@ -205,6 +331,8 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
               ],
             ),
           ),
+
+          // Content
           Expanded(
             child: (_startDate == null || _endDate == null)
                 ? const Center(
@@ -215,7 +343,6 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
                       if (snapshot.connectionState == ConnectionState.waiting) {
                         return const Center(child: CircularProgressIndicator());
                       }
-
                       if (snapshot.hasError) {
                         return Center(child: Text("Error: ${snapshot.error}"));
                       }
@@ -228,30 +355,42 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
                         allDates.add(date);
                       }
 
-                      int present = 0, absent = 0, partial = 0, weekOff = 0, workedWeekOff = 0;
+                      int present = 0,
+                          absent = 0,
+                          partial = 0,
+                          weekOff = 0,
+                          workedWeekOff = 0,
+                          holidays = 0;
                       double totalPeriodHours = 0;
                       double totalPeriodOT = 0;
 
                       for (var date in allDates) {
                         final record = data[date];
-
                         DateTime? punchInTime = record?["in"] as DateTime?;
                         DateTime? punchOutTime = record?["out"] as DateTime?;
-
-                        double totalHours = 0;
-                        double otHours = 0;
-
-                        bool isWeekOff = record?["type"] == "week_off" || date.weekday == DateTime.sunday;
+                        String? type = record?["type"];
+                        bool isWeekOff =
+                            type == "week_off" || date.weekday == DateTime.sunday;
+                        bool isHoliday = type == "holiday";
                         bool hasPunch = punchInTime != null || punchOutTime != null;
 
                         if (punchInTime != null && punchOutTime != null) {
-                          totalHours = punchOutTime.difference(punchInTime).inMinutes / 60.0;
-                          otHours = totalHours > 12 ? totalHours - 12 : 0;
+                          // If punchOut is before punchIn (rare), assume next day
+                          DateTime adjustedPunchOut = punchOutTime;
+                          if (punchOutTime.isBefore(punchInTime)) {
+                            adjustedPunchOut =
+                                punchOutTime.add(const Duration(days: 1));
+                          }
+                          final totalHours =
+                              adjustedPunchOut.difference(punchInTime).inMinutes /
+                                  60.0;
                           totalPeriodHours += totalHours;
-                          totalPeriodOT += otHours;
+                          totalPeriodOT += totalHours > 12 ? totalHours - 12 : 0;
                         }
 
-                        if (isWeekOff && hasPunch) {
+                        if (isHoliday) {
+                          holidays++;
+                        } else if (isWeekOff && hasPunch) {
                           workedWeekOff++;
                         } else if (isWeekOff) {
                           weekOff++;
@@ -270,9 +409,11 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
+                              // Summary cards
                               SingleChildScrollView(
                                 scrollDirection: Axis.horizontal,
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 4),
                                 child: Row(
                                   children: [
                                     _buildSummaryCard("Total Days", allDates.length,
@@ -287,13 +428,19 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
                                         Icons.beach_access, isTablet),
                                     _buildSummaryCard("Worked on WeekOff", workedWeekOff,
                                         Colors.blue, Icons.work, isTablet),
+                                    _buildSummaryCard("Holiday", holidays, Colors.purple,
+                                        Icons.celebration, isTablet),
                                     _buildSummaryCard("Total Hrs", 0, Colors.blueAccent,
-                                        Icons.access_time, isTablet, hours: totalPeriodHours),
+                                        Icons.access_time, isTablet,
+                                        hours: totalPeriodHours),
                                     _buildSummaryCard("OT Hrs", 0, Colors.deepPurple,
-                                        Icons.timelapse, isTablet, hours: totalPeriodOT),
+                                        Icons.timelapse, isTablet,
+                                        hours: totalPeriodOT),
                                   ],
                                 ),
                               ),
+
+                              // Day list
                               ListView.builder(
                                 shrinkWrap: true,
                                 physics: const NeverScrollableScrollPhysics(),
@@ -302,36 +449,65 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
                                   final date = allDates[index];
                                   final record = data[date];
 
-                                  DateTime? punchInTime = record?["in"] as DateTime?;
-                                  DateTime? punchOutTime = record?["out"] as DateTime?;
+                                  DateTime? punchInTime =
+                                      record?["in"] as DateTime?;
+                                  DateTime? punchOutTime =
+                                      record?["out"] as DateTime?;
+                                  String? holidayName =
+                                      record?["holidayName"] as String?;
+                                  String? type = record?["type"] as String?;
 
+                                  // Display strings:
                                   String punchIn = punchInTime != null
-                                      ? DateFormat("dd MMM yyyy hh:mm a").format(punchInTime)
+                                      ? DateFormat("dd MMM yyyy hh:mm a")
+                                          .format(punchInTime)
                                       : "-";
-                                  String punchOut = punchOutTime != null
-                                      ? DateFormat("dd MMM yyyy hh:mm a").format(punchOutTime)
-                                      : "-";
+
+                                  String punchOut = "-";
+                                  if (punchOutTime != null) {
+                                    // If this punchOut belongs to after-midnight (<5), show 24+ format for time only.
+                                    if (punchOutTime.hour < 5) {
+                                      // show just time in 24+ style, keeping date display as the grouped day
+                                      punchOut = _displayTimeWith27Style(punchOutTime);
+                                    } else {
+                                      punchOut = DateFormat("dd MMM yyyy hh:mm a")
+                                          .format(punchOutTime);
+                                    }
+                                  }
 
                                   String punchInAddr = record?["inAddress"] ?? "";
                                   String punchOutAddr = record?["outAddress"] ?? "";
 
                                   double totalHours = 0;
                                   double otHours = 0;
-
                                   if (punchInTime != null && punchOutTime != null) {
-                                    totalHours =
-                                        punchOutTime.difference(punchInTime).inMinutes / 60.0;
+                                    DateTime adjustedPunchOut = punchOutTime;
+                                    if (punchOutTime.isBefore(punchInTime)) {
+                                      adjustedPunchOut =
+                                          punchOutTime.add(const Duration(days: 1));
+                                    }
+                                    totalHours = adjustedPunchOut
+                                            .difference(punchInTime)
+                                            .inMinutes /
+                                        60.0;
                                     otHours = totalHours > 12 ? totalHours - 12 : 0;
                                   }
 
-                                  bool isWeekOff = record?["type"] == "week_off" || date.weekday == DateTime.sunday;
-                                  bool hasPunch = punchInTime != null || punchOutTime != null;
+                                  bool isWeekOff =
+                                      type == "week_off" || date.weekday == DateTime.sunday;
+                                  bool isHoliday = type == "holiday";
+                                  bool hasPunch =
+                                      punchInTime != null || punchOutTime != null;
 
                                   Color statusColor;
                                   IconData statusIcon;
                                   String statusText;
 
-                                  if (isWeekOff && hasPunch) {
+                                  if (isHoliday) {
+                                    statusColor = Colors.purple;
+                                    statusIcon = Icons.celebration;
+                                    statusText = ""; // removed "Holiday" display
+                                  } else if (isWeekOff && hasPunch) {
                                     statusColor = Colors.blue;
                                     statusIcon = Icons.work;
                                     statusText = "Worked on Week Off";
@@ -360,7 +536,8 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
                                       borderRadius: BorderRadius.circular(15),
                                     ),
                                     elevation: 5,
-                                    margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                    margin: const EdgeInsets.symmetric(
+                                        horizontal: 12, vertical: 6),
                                     child: InkWell(
                                       onTap: () {
                                         setState(() {
@@ -370,26 +547,44 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
                                       child: Padding(
                                         padding: const EdgeInsets.all(12.0),
                                         child: Column(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
                                           children: [
                                             Row(
                                               children: [
                                                 CircleAvatar(
                                                   radius: isTablet ? 26 : 22,
-                                                  backgroundColor: statusColor.withOpacity(0.15),
-                                                  child: Icon(statusIcon,
-                                                      color: statusColor,
-                                                      size: isTablet ? 26 : 22),
+                                                  backgroundColor:
+                                                      statusColor.withOpacity(0.15),
+                                                  child: Icon(
+                                                    statusIcon,
+                                                    color: statusColor,
+                                                    size: isTablet ? 26 : 22,
+                                                  ),
                                                 ),
                                                 const SizedBox(width: 12),
                                                 Expanded(
-                                                  child: Text(
-                                                    DateFormat("dd MMM yyyy (EEE)").format(date),
-                                                    style: TextStyle(
-                                                      fontWeight: FontWeight.bold,
-                                                      fontSize: isTablet ? 16 : 15,
-                                                      color: statusColor,
-                                                    ),
+                                                  child: Column(
+                                                    crossAxisAlignment:
+                                                        CrossAxisAlignment.start,
+                                                    children: [
+                                                      Text(
+                                                        DateFormat("dd MMM yyyy (EEE)")
+                                                            .format(date),
+                                                        style: TextStyle(
+                                                          fontWeight: FontWeight.bold,
+                                                          fontSize: isTablet ? 16 : 15,
+                                                          color: statusColor,
+                                                        ),
+                                                      ),
+                                                      if (isHoliday && holidayName != null)
+                                                        Text(
+                                                          "Holiday: $holidayName",
+                                                          style: TextStyle(
+                                                              fontSize: 13,
+                                                              color: statusColor),
+                                                        ),
+                                                    ],
                                                   ),
                                                 ),
                                                 Icon(
@@ -397,20 +592,32 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
                                                       ? Icons.keyboard_arrow_up
                                                       : Icons.keyboard_arrow_down,
                                                   color: Colors.grey,
-                                                )
+                                                ),
                                               ],
                                             ),
                                             const SizedBox(height: 8),
-                                            Text(statusText, style: TextStyle(color: statusColor)),
-                                            if (punchInTime != null) Text("Punch In: $punchIn"),
-                                            if (punchOutTime != null) Text("Punch Out: $punchOut"),
-                                            if (punchInTime != null && punchOutTime != null) ...[
-                                              Text("Total Hours: ${_formatHoursToHHMM(totalHours)}"),
-                                              Text("OT Hours: ${_formatHoursToHHMM(otHours)}"),
+                                            if (statusText.isNotEmpty)
+                                              Text(statusText,
+                                                  style: TextStyle(
+                                                      color: statusColor,
+                                                      fontWeight:
+                                                          FontWeight.bold)),
+                                            if (punchInTime != null)
+                                              Text("Punch In: $punchIn"),
+                                            if (punchOutTime != null)
+                                              Text("Punch Out: $punchOut"),
+                                            if (punchInTime != null &&
+                                                punchOutTime != null) ...[
+                                              Text(
+                                                  "Total Hours: ${_formatHoursToHHMM(totalHours)}"),
+                                              Text(
+                                                  "OT Hours: ${_formatHoursToHHMM(otHours)}"),
                                             ],
                                             if (isExpanded) ...[
-                                              if (punchInAddr.isNotEmpty) Text("Punch In Location: $punchInAddr"),
-                                              if (punchOutAddr.isNotEmpty) Text("Punch Out Location: $punchOutAddr"),
+                                              if (punchInAddr.isNotEmpty)
+                                                Text("Punch In Location: $punchInAddr"),
+                                              if (punchOutAddr.isNotEmpty)
+                                                Text("Punch Out Location: $punchOutAddr"),
                                             ]
                                           ],
                                         ),
@@ -431,9 +638,11 @@ class _AttendanceDataScreenState extends State<AttendanceDataScreen> {
     );
   }
 
-  Widget _buildSummaryCard(String title, int count, Color color, IconData icon, bool isTablet,
+  Widget _buildSummaryCard(String title, int count, Color color, IconData icon,
+      bool isTablet,
       {double? hours}) {
-    String displayText = hours != null ? _formatHoursToHHMM(hours) : count.toString();
+    String displayText =
+        hours != null ? _formatHoursToHHMM(hours) : count.toString();
     return Card(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       elevation: 4,
