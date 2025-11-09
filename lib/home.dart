@@ -141,15 +141,14 @@ class _UsersHomePageState extends State<UsersHomePage> {
                           children: [
                             CircleAvatar(
                               radius: isTablet ? 35 : 30,
-                              backgroundImage:
-                                  (userData!['imageUrl'] != null &&
-                                          userData!['imageUrl']
-                                              .toString()
-                                              .isNotEmpty)
-                                      ? NetworkImage(userData!['imageUrl'])
-                                      : const NetworkImage(
-                                          'https://via.placeholder.com/150',
-                                        ),
+                              backgroundImage: (userData!['imageUrl'] != null &&
+                                      userData!['imageUrl']
+                                          .toString()
+                                          .isNotEmpty)
+                                  ? NetworkImage(userData!['imageUrl'])
+                                  : const NetworkImage(
+                                      'https://via.placeholder.com/150',
+                                    ),
                             ),
                             const SizedBox(width: 14),
                             Expanded(

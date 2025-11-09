@@ -2,9 +2,11 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:geocoding/geocoding.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:pcuser/mapview.dart';
 import 'package:pcuser/razor_pay_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class CabBookingPage extends StatefulWidget {
   const CabBookingPage({super.key});
@@ -19,11 +21,14 @@ class _CabBookingPageState extends State<CabBookingPage> {
   final TextEditingController _dropController = TextEditingController();
   final TextEditingController _daysController = TextEditingController();
   final TextEditingController _notesController = TextEditingController();
-  double amount = 100;
+  double amount = 0;
   DateTime? _startDate;
   TimeOfDay? _loginTime;
   bool _isLoading = false;
   LatLng? _pickupLatLng;
+  LatLng? _dropLatLng;
+  double _distance = 0.0;
+  final RazorpayService _razorpayService = RazorpayService();
 
   Future<void> _pickDate() async {
     final DateTime? picked = await showDatePicker(
@@ -51,7 +56,23 @@ class _CabBookingPageState extends State<CabBookingPage> {
     }
   }
 
-  Future<void> _submitBooking() async {
+  void _calculateDistanceAndPrice() {
+    if (_pickupLatLng != null && _dropLatLng != null) {
+      final distanceInMeters = Geolocator.distanceBetween(
+        _pickupLatLng!.latitude,
+        _pickupLatLng!.longitude,
+        _dropLatLng!.latitude,
+        _dropLatLng!.longitude,
+      );
+
+      setState(() {
+        _distance = distanceInMeters / 1000; // Convert to kilometers
+        amount = _distance * 12; // 12 rs per kilometer
+      });
+    }
+  }
+
+  Future<void> _storeBookingToFirebase() async {
     if (!_formKey.currentState!.validate()) return;
     if (_startDate == null || _loginTime == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -59,29 +80,63 @@ class _CabBookingPageState extends State<CabBookingPage> {
       );
       return;
     }
-
     try {
       setState(() {
         _isLoading = true;
       });
-
-      final user = FirebaseAuth.instance.currentUser;
-
+      var sharedInstance = await SharedPreferences.getInstance();
+      final String empId = sharedInstance.getString("id") ?? "";
+      final snap = await FirebaseFirestore.instance
+          .collection("Users")
+          .where("id", isEqualTo: empId)
+          .limit(1)
+          .get();
+      var snapsot = snap.docs.first.data();
       await FirebaseFirestore.instance.collection('bookings').add({
-        'userId': user?.uid,
+        'userId': empId,
+        'name': snapsot["name"],
+        'companyName': snapsot['companyName'],
+        'department': snapsot['department'],
+        'designation': snapsot['designation'],
+        'subDivision': snapsot['subDivision'],
         'pickupPlace': _pickupController.text.trim(),
         'pickupLat': _pickupLatLng?.latitude,
         'pickupLng': _pickupLatLng?.longitude,
+        'dropPlace': _dropController.text.trim(),
+        'dropLat': _dropLatLng?.latitude,
+        'dropLng': _dropLatLng?.longitude,
         'daysRequired': int.tryParse(_daysController.text.trim()) ?? 1,
         'notes': _notesController.text.trim(),
         'startDate': _startDate!.toIso8601String(),
         'loginTime': _loginTime!.format(context),
+        'distance': _distance,
+        'amount': amount,
         'createdAt': FieldValue.serverTimestamp(),
       });
-
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Booking submitted successfully!")),
       );
+
+      // Clear all fields after successful booking
+      setState(() {
+        // Clear text fields
+        _pickupController.clear();
+        _dropController.clear();
+        _daysController.clear();
+        _notesController.clear();
+
+        // Reset locations
+        _pickupLatLng = null;
+        _dropLatLng = null;
+
+        // Reset date and time
+        _startDate = null;
+        _loginTime = null;
+
+        // Reset distance and amount
+        _distance = 0.0;
+        amount = 0;
+      });
     } catch (e) {
       ScaffoldMessenger.of(
         context,
@@ -91,6 +146,41 @@ class _CabBookingPageState extends State<CabBookingPage> {
         _isLoading = false;
       });
     }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _razorpayService.init(); // ✅ initialize once
+  }
+
+  @override
+  void dispose() {
+    _razorpayService.dispose(); // ✅ clear listeners
+    super.dispose();
+  }
+
+  // ✅ Use the same instance to pay
+  void _startPayment() async {
+    _calculateDistanceAndPrice();
+    _razorpayService.pay(
+      amount: amount,
+      onSuccess: (response) {
+        print("✅ Payment Success: ${response.paymentId}");
+        _storeBookingToFirebase();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Payment Successful: ${response.paymentId}")),
+        );
+      },
+      onError: (error) {
+        print("❌ Payment failed: ${error.message}");
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content:
+                  Text("Payment failed: ${error.message ?? 'Unknown error'}")),
+        );
+      },
+    );
   }
 
   @override
@@ -252,10 +342,12 @@ class _CabBookingPageState extends State<CabBookingPage> {
                             );
                             if (result != null) {
                               setState(() {
-                                _pickupLatLng = result["latLng"];
+                                _dropLatLng = result["latLng"];
                                 _dropController.text = result["address"];
                               });
                             }
+
+                            _calculateDistanceAndPrice();
                           },
                         )
                       : IconButton(
@@ -275,6 +367,7 @@ class _CabBookingPageState extends State<CabBookingPage> {
                                     locations.first.longitude,
                                   );
                                 });
+                                _calculateDistanceAndPrice();
                               }
                             } catch (e) {
                               ScaffoldMessenger.of(context).showSnackBar(
@@ -321,6 +414,32 @@ class _CabBookingPageState extends State<CabBookingPage> {
               //             ),
               const SizedBox(height: 12),
 
+              // Distance and Price Information
+              if (_distance > 0)
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      children: [
+                        Text(
+                          'Distance: ${_distance.toStringAsFixed(2)} km',
+                          style: TextStyle(fontSize: 16),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Price: \$${amount.toStringAsFixed(2)}',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.deepPurple,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              const SizedBox(height: 12),
+
               // Additional notes
               TextFormField(
                 controller: _notesController,
@@ -351,7 +470,7 @@ class _CabBookingPageState extends State<CabBookingPage> {
                         borderRadius: BorderRadius.circular(12),
                       ),
                     ),
-                    onPressed: _isLoading ? null : _submitBooking,
+                    onPressed: _isLoading ? null : _startPayment,
                     icon: _isLoading
                         ? const CircularProgressIndicator(
                             color: Colors.white,
@@ -370,21 +489,14 @@ class _CabBookingPageState extends State<CabBookingPage> {
                       ),
                     ),
                     onPressed: () {
-                      Navigator.pop(context);
+                      // Navigator.pop(context);
+                      print(FirebaseAuth.instance.currentUser?.uid);
                     },
                     icon: const Icon(Icons.cancel),
                     label: const Text("Cancel"),
                   ),
                 ],
               ),
-              ElevatedButton(
-                  onPressed: () async {
-                    RazorpayService().pay(
-                        amount: amount,
-                        email: "esakkirajam78@gmail.com",
-                        contact: "7708072172");
-                  },
-                  child: Text("Pay"))
             ],
           ),
         ),

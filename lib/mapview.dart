@@ -128,8 +128,8 @@ class _MapViewState extends State<MapView> {
             onPressed: _onConfirm,
             child: const Text(
               "CONFIRM",
-              style: TextStyle(
-                  color: Colors.white, fontWeight: FontWeight.bold),
+              style:
+                  TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
             ),
           ),
         ],
@@ -160,9 +160,8 @@ class _MapViewState extends State<MapView> {
                   ? {}
                   : {
                       Marker(
-                        markerId: const MarkerId("picked"),
-                        position: _pickedLocation!,
-                      ),
+                          markerId: const MarkerId("picked"),
+                          position: _pickedLocation!),
                     },
             ),
     );
