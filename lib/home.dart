@@ -47,6 +47,38 @@ class _UsersHomePageState extends State<UsersHomePage> {
           empId = id;
           userData = snapshot.docs.first.data();
         });
+
+        // ✅ Add real-time listener to detect isActive change
+        FirebaseFirestore.instance
+            .collection('Users')
+            .where('id', isEqualTo: id)
+            .snapshots()
+            .listen((snapshot) async {
+          if (snapshot.docs.isNotEmpty) {
+            final data = snapshot.docs.first.data();
+            if (data['isActive'] == false) {
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Your account is inactive. Logging out...'),
+                ),
+              );
+
+              // Wait for 2 seconds before logging out
+              await Future.delayed(const Duration(seconds: 2));
+
+              // Clear stored data and navigate to Login
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.remove('id');
+
+              if (!mounted) return;
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(builder: (_) => const StylishLoginPage()),
+              );
+            }
+          }
+        });
       } else {
         setState(() {
           empId = id;

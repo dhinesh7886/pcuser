@@ -114,7 +114,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         .get();
 
     for (final doc in existing.docs) {
-      final existingReason = doc['reason'] ?? '';
+      final existingReason = doc.data().containsKey('reason') ? doc['reason'] ?? '' : '';
       if (existingReason != reason) {
         await recordRef.doc(doc.id).delete();
       }
@@ -145,69 +145,86 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
-  // ✅ UPDATED FUNCTION WITH YOUR LOGIC
+  // ✅ IMPROVED: Only fetch last record, consistent auto-close timestamp/dateKey, avoid duplicates
   Future<void> _determineNextPunchType() async {
-    final now = DateTime.now();
-    final recordRef = FirebaseFirestore.instance
-        .collection('attendance')
-        .doc(widget.userId)
-        .collection('records');
+    try {
+      final now = DateTime.now();
+      final todayKey = DateFormat('ddMMyyyy').format(now);
+      final recordRef = FirebaseFirestore.instance
+          .collection('attendance')
+          .doc(widget.userId)
+          .collection('records');
 
-    final allRecords = await recordRef.get();
-    if (allRecords.docs.isEmpty) {
-      if (mounted) setState(() => nextPunchType = 'punch_in');
-      return;
-    }
-
-    allRecords.docs.sort((a, b) =>
-        (b['timestamp'] as Timestamp).compareTo(a['timestamp']));
-    final lastRecord = allRecords.docs.first;
-    final lastType = lastRecord['type'];
-    final lastTime = (lastRecord['timestamp'] as Timestamp).toDate();
-
-    // ⏰ Find today's punch-in/out
-    final todayKey = DateFormat('ddMMyyyy').format(now);
-    final todayRecords = allRecords.docs
-        .where((doc) => doc['dateKey'] == todayKey)
-        .toList();
-
-    // 🕐 If last punch was 'in'
-    if (lastType == 'punch_in') {
-      final diffHours = now.difference(lastTime).inHours.toDouble();
-
-      if (diffHours >= 24) {
-        // Auto close after 24 hours
-        await recordRef.add({
-          'timestamp': Timestamp.fromDate(lastTime.add(const Duration(hours: 24))),
-          'type': 'punch_out_not_complete',
-          'dateKey': DateFormat('ddMMyyyy').format(lastTime),
-          'autoClosed': true,
-        });
-        nextPunchType = 'punch_in';
-      } else {
-        nextPunchType = 'punch_out';
+      // fetch last record only (more efficient)
+      final lastQuery = await recordRef.orderBy('timestamp', descending: true).limit(1).get();
+      if (lastQuery.docs.isEmpty) {
+        if (mounted) setState(() => nextPunchType = 'punch_in');
+        return;
       }
-    } else if (lastType == 'punch_out') {
-      final lastDate = DateFormat('ddMMyyyy').format(lastTime);
-      final sameDay = lastDate == todayKey;
 
-      if (sameDay) {
-        // ❌ Already punched out today — block another punch-in
-        nextPunchType = null;
-      } else {
-        // ✅ If last punch-out was from a cross-day shift (<24h difference)
-        final diffHours = now.difference(lastTime).inHours.toDouble();
-        if (diffHours < 24) {
-          nextPunchType = 'punch_in';
+      final lastDoc = lastQuery.docs.first;
+      final lastData = lastDoc.data();
+      final lastType = lastData['type'] as String?;
+      final lastTs = (lastData['timestamp'] as Timestamp?)?.toDate();
+
+      if (lastType == null || lastTs == null) {
+        if (mounted) setState(() => nextPunchType = 'punch_in');
+        return;
+      }
+
+      if (lastType == 'punch_in') {
+        final diff = now.difference(lastTs);
+        if (diff.inHours >= 24) {
+          // Need to auto-close that punch_in at lastTs + 24h
+          final autoCloseTs = lastTs.add(const Duration(hours: 24));
+          final autoCloseDateKey = DateFormat('ddMMyyyy').format(autoCloseTs);
+
+          // Ensure we don't create duplicate auto-closed records for same timestamp
+          final existingAutoClose = await recordRef
+              .where('type', isEqualTo: 'punch_out_not_complete')
+              .where('autoClosed', isEqualTo: true)
+              .where('dateKey', isEqualTo: autoCloseDateKey)
+              .get();
+
+          bool duplicate = false;
+          for (final d in existingAutoClose.docs) {
+            final ts = (d['timestamp'] as Timestamp?)?.toDate();
+            if (ts != null && (ts.difference(autoCloseTs).inSeconds).abs() <= 2) {
+              duplicate = true;
+              break;
+            }
+          }
+
+          if (!duplicate) {
+            await recordRef.add({
+              'timestamp': Timestamp.fromDate(autoCloseTs),
+              'type': 'punch_out_not_complete',
+              'dateKey': autoCloseDateKey,
+              'autoClosed': true,
+            });
+          }
+
+          if (mounted) setState(() => nextPunchType = 'punch_in');
         } else {
-          nextPunchType = 'punch_in';
+          // last punch was recent punch_in -> next should be punch_out
+          if (mounted) setState(() => nextPunchType = 'punch_out');
         }
+      } else if (lastType == 'punch_out' || lastType == 'punch_out_not_complete') {
+        final lastDateKey = DateFormat('ddMMyyyy').format(lastTs);
+        // If last punch-out happened today -> attendance completed for today
+        if (lastDateKey == todayKey) {
+          if (mounted) setState(() => nextPunchType = null);
+        } else {
+          // last punch-out was on earlier date -> allow punch_in
+          if (mounted) setState(() => nextPunchType = 'punch_in');
+        }
+      } else {
+        if (mounted) setState(() => nextPunchType = 'punch_in');
       }
-    } else {
-      nextPunchType = 'punch_in';
+    } catch (e) {
+      // on any error default to allowing punch_in
+      if (mounted) setState(() => nextPunchType = 'punch_in');
     }
-
-    if (mounted) setState(() {});
   }
 
   Future<Map<String, dynamic>> _getAccurateLocation() async {
@@ -502,11 +519,14 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     String timeStr = 'Pending';
     if (ts != null) {
       final now = DateTime.now();
-      int hour = ts.hour;
-      if (ts.day > now.day) hour += 24;
-      final formattedHour = hour.toString().padLeft(2, '0');
-      final formattedMin = ts.minute.toString().padLeft(2, '0');
-      timeStr = "$formattedHour:$formattedMin";
+      final formattedTime = DateFormat('HH:mm').format(ts);
+      if (DateFormat('ddMMyyyy').format(ts) != DateFormat('ddMMyyyy').format(now)) {
+        // show date if not today
+        final datePart = DateFormat('dd/MM').format(ts);
+        timeStr = "$formattedTime ($datePart)";
+      } else {
+        timeStr = formattedTime;
+      }
     }
 
     final address = data['address'] ?? 'No address';
@@ -518,20 +538,27 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         ? "Punch Out Not Complete"
         : (isPunchIn ? "Punch In" : "Punch Out");
 
+    Color avatarColor;
+    IconData avatarIcon;
+    if (type == 'punch_out_not_complete') {
+      avatarColor = Colors.grey;
+      avatarIcon = Icons.error_outline;
+    } else {
+      avatarColor = isPunchIn ? Colors.green : Colors.red;
+      avatarIcon = isPunchIn ? Icons.login : Icons.logout;
+    }
+
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       color: Colors.white.withOpacity(0.9),
       child: ListTile(
         leading: CircleAvatar(
-          backgroundColor: type == 'punch_out_not_complete'
-              ? Colors.grey
-              : (isPunchIn ? Colors.green : Colors.red),
+          backgroundColor: avatarColor,
           child: Icon(
-              type == 'punch_out_not_complete'
-                  ? Icons.error_outline
-                  : (isPunchIn ? Icons.login : Icons.logout),
-              color: Colors.white,
-              size: width * 0.07),
+            avatarIcon,
+            color: Colors.white,
+            size: width * 0.07,
+          ),
         ),
         title: Text("$label • $timeStr",
             style: TextStyle(fontSize: width * 0.045)),

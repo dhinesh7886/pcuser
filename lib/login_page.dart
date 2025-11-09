@@ -21,8 +21,9 @@ class _StylishLoginPageState extends State<StylishLoginPage> {
   String? firestoreName;
   String? firestoreDob;
   String? passwordHint;
+  bool? isActiveUser;
   bool passwordVisible = false;
-  bool _loading = true; // For initial check
+  bool _loading = true;
 
   @override
   void initState() {
@@ -55,6 +56,7 @@ class _StylishLoginPageState extends State<StylishLoginPage> {
     }
   }
 
+  // Fetch user details + isActive status
   Future<void> _fetchUserDetails(String empId) async {
     if (empId.isEmpty) return;
 
@@ -65,18 +67,20 @@ class _StylishLoginPageState extends State<StylishLoginPage> {
           .get();
 
       if (docSnapshot.exists) {
-        final data = docSnapshot.data();
+        final data = docSnapshot.data()!;
         setState(() {
-          firestoreName = data!['name'];
+          firestoreName = data['name'];
           var p = data['dob'].split("/");
-          firestoreDob = p[0] + p[1]; // Combine DD and MM
+          firestoreDob = p[0] + p[1];
           passwordHint = _generatePasswordHint(firestoreName!, firestoreDob!);
+          isActiveUser = data['isActive'] ?? false; // 👈 check active field
         });
       } else {
         setState(() {
           firestoreName = null;
           firestoreDob = null;
           passwordHint = null;
+          isActiveUser = false;
         });
       }
     } catch (e) {
@@ -85,14 +89,34 @@ class _StylishLoginPageState extends State<StylishLoginPage> {
         firestoreName = null;
         firestoreDob = null;
         passwordHint = null;
+        isActiveUser = false;
       });
     }
   }
 
+  // 🧩 Alternative: If "isActive" is in subcollection instead of field
+  /*
+  Future<bool> _checkUserActive(String empId) async {
+    try {
+      final subDoc = await FirebaseFirestore.instance
+          .collection('Users')
+          .doc(empId)
+          .collection('Status')
+          .doc('isActive')
+          .get();
+
+      return subDoc.exists && (subDoc.data()?['active'] == true);
+    } catch (e) {
+      debugPrint("Error checking active status: $e");
+      return false;
+    }
+  }
+  */
+
   String generatePassword(String name, String dob) {
     final first4 =
         name.length >= 4 ? name.substring(0, 4).toUpperCase() : name.toUpperCase();
-    final ddmm = dob.substring(0, 4); // DDMM from DDMMYYYY
+    final ddmm = dob.substring(0, 4);
     return '$first4$ddmm';
   }
 
@@ -274,16 +298,29 @@ class _StylishLoginPageState extends State<StylishLoginPage> {
                           height: buttonHeight,
                           child: ElevatedButton(
                             onPressed: () async {
-                              String enteredPassword =
-                                  passwordController.text.trim();
+                              String empId = empIdController.text.trim();
+                              if (empId.isEmpty) return;
+
+                              // 🔍 Check if user is active before proceeding
+                              if (isActiveUser == false) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text("Your account is inactive. Contact admin."),
+                                    backgroundColor: Colors.redAccent,
+                                  ),
+                                );
+                                return;
+                              }
+
+                              String enteredPassword = passwordController.text.trim();
                               String enteredOtp = otpController.text.trim();
                               bool success = false;
 
                               if (firestoreName != null &&
                                   firestoreDob != null &&
                                   enteredPassword.isNotEmpty) {
-                                String generatedPwd = generatePassword(
-                                    firestoreName!, firestoreDob!);
+                                String generatedPwd =
+                                    generatePassword(firestoreName!, firestoreDob!);
                                 if (enteredPassword == generatedPwd) {
                                   success = true;
                                 }
@@ -292,7 +329,7 @@ class _StylishLoginPageState extends State<StylishLoginPage> {
                               if (userProvider.otpSent && enteredOtp.isNotEmpty) {
                                 bool otpValid = await userProvider.submit(
                                   enteredOtp,
-                                  empIdController.text.trim(),
+                                  empId,
                                   context,
                                 );
                                 if (otpValid) success = true;
@@ -301,14 +338,13 @@ class _StylishLoginPageState extends State<StylishLoginPage> {
                               if (success) {
                                 var sharedInstance =
                                     await SharedPreferences.getInstance();
-                                sharedInstance.setString(
-                                    "id", empIdController.text.trim());
+                                sharedInstance.setString("id", empId);
                                 if (mounted) {
                                   Navigator.pushReplacement(
                                     context,
                                     MaterialPageRoute(
-                                      builder: (context) => AttendanceScreen(
-                                          userId: empIdController.text.trim()),
+                                      builder: (context) =>
+                                          AttendanceScreen(userId: empId),
                                     ),
                                   );
                                 }
@@ -350,6 +386,7 @@ class _StylishLoginPageState extends State<StylishLoginPage> {
                                 firestoreName = null;
                                 firestoreDob = null;
                                 passwordVisible = false;
+                                isActiveUser = null;
                               });
                             },
                             style: ElevatedButton.styleFrom(
